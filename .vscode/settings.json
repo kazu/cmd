@@ -1,0 +1,10 @@
+{
+    // "go.lintOnSave": "file",
+    // "go.vetOnSave": "workspace",
+    // "editor.formatOnSave": true,
+    // "go.testOnSave": true,
+    // "go.languageServerExperimentalFeatures": {
+    //     "diagnostics": true,
+    //     "documentLink": true
+    // }
+}
