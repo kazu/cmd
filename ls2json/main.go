@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+  "strings"
 
 	vfs "github.com/kazu/vfs-index"
 	"github.com/vbauerster/mpb/v5"
@@ -46,14 +47,17 @@ func main() {
 	}
 
 	var e error
-	dir := os.Args[1]
+	dirs := os.Args[1]
 
-	records, e := lsR(dir, newer)
-	if e != nil {
-		log.Println(e)
-		return
-	}
-	//spew.Dump(records)
+  records := make([]FileRecord, 0)
+
+  for _, dir := range strings.Split(dirs, ",") {
+	  if recs, e := lsR(dir, newer); e == nil {
+      records = append(records, recs...)
+    }else{
+      log.Println(e)
+    }
+  }
 
 	result, e := json.Marshal(records)
 	if e != nil {
@@ -100,7 +104,7 @@ func lsR(dir string, cond time.Time) (result []FileRecord, e error) {
 		func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				log.Println(err)
-				if info.IsDir() {
+				if info != nil && info.IsDir() {
 					return filepath.SkipDir
 				}
 				return nil
@@ -109,7 +113,11 @@ func lsR(dir string, cond time.Time) (result []FileRecord, e error) {
 			if info.IsDir() || info.ModTime().Before(cond) {
 				return nil
 			}
-			//fmt.Println(path, info.Size())
+
+      if strings.HasPrefix(filepath.Base(path), "._") {
+        return nil
+      }
+
 			rel, _ := filepath.Rel(dir, path)
 			bar.IncrBy(1)
 			if bar.Current() >= (int64(total) - 10) {
