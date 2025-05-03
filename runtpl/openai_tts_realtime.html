@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>OpenAI TTS リアルタイム再生</title>
+  <!-- Tailwind CSS をCDNから読み込む -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+</head>
+<body class="bg-gray-100">
+  <div class="max-w-screen-md mx-auto p-4">
+    <h1 class="text-2xl font-bold mb-4">OpenAI TTS リアルタイム再生デモ</h1>
+
+    <!-- API Key 入力欄 -->
+    <label class="block mb-2 font-medium">OpenAI API Key:</label>
+    <input
+      type="password"
+      id="apiKeyInput"
+      class="block w-full p-2 border border-gray-300 rounded mb-4"
+      placeholder="sk-xxxx..."
+    />
+
+    <!-- テキスト入力欄 -->
+    <label class="block mb-2 font-medium">合成したいテキスト:</label>
+    <textarea
+      id="textInput"
+      class="block w-full p-2 border border-gray-300 rounded mb-4"
+      rows="10"
+      placeholder="こんにちは、これはリアルタイムの音声合成デモです。"
+    >[message]</textarea>
+    <labal class="block mb-2 font-medium">現在の行:</labal>
+    <labal id="curIdx">0</labal>
+    <label id="prevText" class="block mb-2 font-medium">none</label>
+    <label id="currentText" class="block mb-2 font-medium">none</label>
+
+
+    <!-- 再生開始ボタン -->
+    <button
+      id="startButton"
+      class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+    >
+      再生開始
+    </button>
+    <button
+      id="pause"
+      class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+    >
+    一時停止
+  </button>
+  
+
+    <button
+      id="stop"
+      class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+    >
+      再生停止
+    </button>
+
+    
+
+    <!-- 波形表示用Canvas -->
+    <canvas
+      id="waveCanvas"
+      width="600"
+      height="200"
+      class="border border-gray-300 mt-4 w-full"
+    ></canvas>
+  </div>
+
+  <script>
+    // AudioContext の初期化（サンプルレート24kHz指定の例）
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 24000
+    });
+
+    // 受信したPCM16データを一時的に貯めるキュー
+    let pendingBytes = new Uint8Array(0);
+    let pendingBytesQueue = new Array(0);
+
+    // 閾値（ある程度溜めてから再生する）
+    const bufferThreshold = 32 * 1024; // 32KB
+
+    // leftover: 受信バイトが2バイト単位にならない場合、その端数を次回に回す
+    let leftover = new Uint8Array(0);
+
+    // 再生制御フラグ
+    let isPlaying = false;
+    let sourceNode = null;
+    let isReady = false;
+    let idxForceStop = 0;;
+
+    // AnalyserNode（波形可視化用）
+    const analyserNode = audioContext.createAnalyser();
+    analyserNode.fftSize = 1024;
+    const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+
+    // Canvas の描画コンテキスト
+    const waveCanvas = document.getElementById("waveCanvas");
+    const waveCtx = waveCanvas.getContext("2d");
+
+    const playTimeout = 10 * 1000; // 10秒
+
+    /**
+     * 波形を描画する関数
+     */
+    function drawWaveform() {
+      requestAnimationFrame(drawWaveform);
+      // 背景をクリア
+      waveCtx.fillStyle = "#000";
+      waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+
+      // time domain data を取得
+      analyserNode.getByteTimeDomainData(dataArray);
+
+      waveCtx.lineWidth = 2;
+      waveCtx.strokeStyle = "lime";
+      waveCtx.beginPath();
+
+      const sliceWidth = waveCanvas.width * 1.0 / dataArray.length;
+      let x = 0;
+
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = (v * waveCanvas.height) / 2;
+        if (i === 0) {
+          waveCtx.moveTo(x, y);
+        } else {
+          waveCtx.lineTo(x, y);
+        }
+        x += sliceWidth;
+      }
+
+      waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+      waveCtx.stroke();
+    }
+
+    let playTexts = new Array(0);
+
+    let playStart = performance.now();
+
+    let status = new Array(0);
+    let remainDurs = new Array(0);
+    let playStarts = new Array(0);
+
+    const STATUS_START = 0;
+    const STATUS_PUSHED = 1;
+    const STATUS_END = 2;
+
+    let curPlaying = 0;
+
+    function getRemainingTime(myCnt) {
+      if (sourceNode == null) {
+        return playTimeout;
+      }
+      // if( playStarts[myCnt] == undefined) {
+      //   return playTimeout;
+      // }
+
+      // const elapsed = audioContext.currentTime - playStarts[myCnt];
+      const totalDuration = sourceNode.buffer.duration;
+      // const remaining = totalDuration - elapsed;
+      // return Math.max(0, remaining) * 1000; // ミリ秒に変換
+      return  Math.max(playTimeout, totalDuration*1000);     
+    }
+
+    // 再生をスケジューリングする関数
+    async function schedulePlayback(myCnt) {
+
+      if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
+        isPlaying = false
+        status[curPlaying] = STATUS_END;
+        idxForceStop = curPlaying;
+        console.log("force stop:", curPlaying);
+        return;
+      }
+
+
+      // すでに再生中ならスキップ
+      if (isPlaying) return;
+
+      if (pendingBytesQueue.length == 0) return;
+
+      curPlaying = myCnt;
+      isPlaying = true;
+
+      playStart = performance.now();
+      const ctext = playTexts.shift()
+      document.getElementById("prevText").innerText = document.getElementById("currentText").innerText
+      document.getElementById("currentText").innerText = ctext
+      document.getElementById("curIdx").innerText = curPlaying
+
+      console.log("pop text", ctext);
+      console.log("pop qeueue len=", pendingBytesQueue.length);
+
+      // 今回再生する分
+      const dataToPlay = pendingBytesQueue.shift(); // キューから取り出す
+
+      // PCM16 → Int16
+      const int16Data = new Int16Array(dataToPlay.buffer);
+
+      // Int16 → Float32
+      const float32Data = new Float32Array(int16Data.length);
+      for (let i = 0; i < int16Data.length; i++) {
+        float32Data[i] = int16Data[i] / 32768.0;
+      }
+
+      // AudioBuffer 作成 (モノラル:1ch)
+      const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
+      audioBuffer.copyToChannel(float32Data, 0);
+
+      // AudioBufferSourceNode で再生
+      sourceNode = audioContext.createBufferSource();
+      sourceNode.buffer = audioBuffer;
+
+      // AnalyserNode→destination へ接続
+      sourceNode.connect(analyserNode);
+      analyserNode.connect(audioContext.destination);
+      // 再生終了時のイベント
+      sourceNode.onended = () => {
+        isPlaying = false;
+        
+        if(idxForceStop > 0 && idxForceStop != curPlaying) {
+          idxForceStop = 0;
+          return;
+        }
+        status[curPlaying] = STATUS_END;
+        // if (pendingBytesQueue.length > 0) {
+        //   schedulePlayback();
+        // }
+        idxForceStop = 0;
+      };
+      sourceNode.start();
+      playStarts[curPlaying] = audioContext.currentTime;
+     
+    }
+
+    // 波形描画開始（ページを開いた直後〜終了までは常に波形を更新し続ける）
+    //drawWaveform();
+
+    isPuase = false
+    isStop = false
+
+    document.getElementById("pause").addEventListener("click", () => {
+      if (isPuase) {
+        audioContext.resume().then(() => {
+          isPuase = false;
+          document.getElementById("pause").innerText = "一時停止";
+        });
+      } else {
+        audioContext.suspend().then(() => {
+          isPuase = true;
+          document.getElementById("pause").innerText = "再開";
+        });
+      }
+    });
+
+    // 再生停止ボタンのクリックイベント    
+    document.getElementById("stop").addEventListener("click", () => {
+      isStop = true;
+      if (sourceNode) {
+        sourceNode.stop(); // 再生を停止
+        sourceNode.disconnect(); // ノードを切断
+        isPlaying = false; // 再生中フラグをリセット
+        pendingBytes = new Uint8Array(0); // キューをクリア
+        leftover = new Uint8Array(0); // leftover をクリア
+      }
+    });
+
+    // OpenAI TTS 設定（必要に応じて変更）
+    const model = "voicevox-v1";
+    const voice = "1";
+    const responseFormat = "pcm";
+
+    
+
+    let cnt = 0;
+
+    const f = (text) => {
+      return new Promise((resolve) =>
+      setTimeout(() => {
+        playTexts.push(text)
+
+        const myCnt = cnt++;
+
+        status[myCnt] = STATUS_START;
+
+
+        // while(playTexts.length > 5 || ( myCnt > 3 && status[myCnt-2] == false)) {
+        //   schedulePlayback();
+        // }
+
+        
+        fetch("http://10.2.1.15:19999/run2", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: model,
+            input: text,
+            voice: voice,
+            speed: 1,
+            response_format: responseFormat
+          })
+        }).then((response) => {
+          if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.status}`);
+          }
+          console.log("request text: ", text);
+          return response.body.getReader();
+        }).then((reader) => {
+          while( myCnt >  0 && status[myCnt-1] < STATUS_PUSHED) { } 
+          resolve();
+
+          function readChunk({done, value}) {
+            if (isStop) {
+              return;
+            }
+            
+            if (done) {
+              // ストリーム終了時: leftover が2バイト以上あれば pendingBytes に追加
+              if (leftover.length >= 2) {
+                const leftoverUseBytes = leftover.length - (leftover.length % 2);
+                if (leftoverUseBytes > 0) {
+                  const leftoverChunk = leftover.slice(0, leftoverUseBytes);
+                  const newPending = new Uint8Array(pendingBytes.length + leftoverChunk.length);
+                  newPending.set(pendingBytes, 0);
+                  newPending.set(leftoverChunk, pendingBytes.length);
+                  pendingBytes = newPending;
+                }
+              }
+              leftover = new Uint8Array(0);
+
+              while(myCnt > 0 && status[myCnt-1] < STATUS_END) {
+                schedulePlayback(myCnt-1);
+              
+                if(isPlaying)
+                  continue;
+              
+                if(pendingBytesQueue.length > 0) 
+                  continue;
+              
+                if(performance.now() - playStart > 2 * getRemainingTime(myCnt-1)) 
+                  break;
+              
+              }
+
+              // ストリーム終わり時点でpendingBytesが残っていれば最終再生
+              if (pendingBytes.length > 0) {
+                pendingBytesQueue.push(pendingBytes);
+                status[myCnt] = STATUS_PUSHED;
+                schedulePlayback(myCnt);
+              }
+              pendingBytes = new Uint8Array(0); // キューをクリア
+              console.log("push qeueue:", myCnt);
+
+              return;
+            }
+
+            // 今回受信した value (Uint8Array) を leftover と結合
+            const combined = new Uint8Array(leftover.length + value.length);
+            combined.set(leftover, 0);
+            combined.set(value, leftover.length);
+
+            // leftover はクリア
+            leftover = new Uint8Array(0);
+
+            // 2バイト単位で取り出せるサイズ
+            const useBytes = combined.length - (combined.length % 2);
+            if (useBytes > 0) {
+              // 再生用pendingBytesに追加
+              const validChunk = combined.slice(0, useBytes);
+              const newPending = new Uint8Array(pendingBytes.length + validChunk.length);
+              newPending.set(pendingBytes, 0);
+              newPending.set(validChunk, pendingBytes.length);
+              pendingBytes = newPending;
+            }
+
+            // 端数を leftover に退避
+            if (useBytes < combined.length) {
+              leftover = combined.slice(useBytes);
+            }
+
+            // ある程度たまったら再生開始
+            // if (pendingBytes.length >= bufferThreshold) {
+            //   schedulePlayback(myCnt);
+            // }
+
+            console.log("start reading");
+            // 次の値を読みにいく。
+            reader.read().then(readChunk);
+          }
+
+          // ストリームを読み取る
+          reader.read().then(readChunk);
+        
+          
+
+        });
+       
+       
+      }, Math.random() * 1000))
+    };
+
+
+
+    document.getElementById("startButton").addEventListener("click", async () => {
+      const apiKey = document.getElementById("apiKeyInput").value.trim();
+      const texts = document.getElementById("textInput").value.trim().split("。");
+       //if (!apiKey || texts.length == 0 ) { 
+      if (texts.length == 0 ) { 
+        alert("API Key と合成テキストを入力してください。");
+        return;
+      }
+
+
+
+      document.getElementById("currentText").innerText = texts[0].trim()
+
+      try {
+        await texts.reduce(
+          (p, v) => p.then(() => f(v)),
+          Promise.resolve()
+        );
+       
+      
+      } catch (error) {
+        console.error("エラー:", error);
+        alert("エラーが発生しました。コンソールをご確認ください。");
+      }
+
+  
+    });
+  </script>
+</body>
+</html>
