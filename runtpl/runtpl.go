@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -214,6 +215,11 @@ func GetFile(name string, lnum int) (string, error) {
 
 func staticer(fname string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+
+		ae := r.Header.Get("Accept-Encoding")
+
+		fmt.Printf("Accept-Encoding: %s\n", ae)
+
 		r.ParseForm()
 		param := r.Form
 		message := param.Get("message")
@@ -231,18 +237,35 @@ func staticer(fname string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
+
 		defer f.Close()
 
-		if val, err := GetFile(message, lnum); err != nil {
+		val, err := GetFile(message, lnum)
+		if err != nil {
 			io.Copy(w, f)
 
 			return
 
-		} else {
+		}
+		if len(message) == 0 || lnum == 0 {
+
 			var b strings.Builder
 			io.Copy(&b, f)
 			w.Write([]byte(strings.ReplaceAll(b.String(), "[message]", val)))
+			return
 		}
+		w.Header().Add("Content-Encoding", "gzip")
+
+		//zf, err := zstd.NewWriter(w)
+		zf := gzip.NewWriter(w)
+		// if err != nil {
+		// 	return
+		// }
+
+		defer zf.Close()
+		var b strings.Builder
+		io.Copy(&b, f)
+		zf.Write([]byte(strings.ReplaceAll(b.String(), "[message]", val)))
 
 	}
 }

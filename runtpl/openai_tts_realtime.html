@@ -87,7 +87,7 @@
     let isPlaying = false;
     let sourceNode = null;
     let isReady = false;
-    let idxForceStop = 0;;
+    let idxForceStop = -1;
 
     // AnalyserNode（波形可視化用）
     const analyserNode = audioContext.createAnalyser();
@@ -99,6 +99,7 @@
     const waveCtx = waveCanvas.getContext("2d");
 
     const playTimeout = 10 * 1000; // 10秒
+    const intervalPerLine = 2; 
 
     /**
      * 波形を描画する関数
@@ -148,6 +149,19 @@
 
     let curPlaying = 0;
 
+    function EndStatuses(cur) {
+      if (cur - 5 < 0){
+        return;
+      }
+
+      for (let i = cur-5; i < cur; i++) {
+        if (status[i] != STATUS_END) {
+          status[i] = STATUS_END;
+        }
+      }
+      status[cur] = STATUS_END;
+    }
+
     function getRemainingTime(myCnt) {
       if (sourceNode == null) {
         return playTimeout;
@@ -157,7 +171,7 @@
       // }
 
       // const elapsed = audioContext.currentTime - playStarts[myCnt];
-      const totalDuration = sourceNode.buffer.duration;
+      const totalDuration = sourceNode.buffer.duration + intervalPerLine;
       // const remaining = totalDuration - elapsed;
       // return Math.max(0, remaining) * 1000; // ミリ秒に変換
       return  Math.max(playTimeout, totalDuration*1000);     
@@ -168,9 +182,14 @@
 
       if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
         isPlaying = false
-        status[curPlaying] = STATUS_END;
+        EndStatuses(curPlaying);
         idxForceStop = curPlaying;
-        console.log("force stop:", curPlaying);
+        console.log("force stop: ", curPlaying);
+        const curElapsed = performance.now() - playStart
+        const dur =  getRemainingTime(myCnt);
+        console.log("elapsed=", curElapsed /1000, 
+                    "remaining=", dur / 1000,
+                    "total=", sourceNode.buffer.duration);
         return;
       }
 
@@ -219,15 +238,16 @@
       sourceNode.onended = () => {
         isPlaying = false;
         
-        if(idxForceStop > 0 && idxForceStop != curPlaying) {
-          idxForceStop = 0;
+        if(idxForceStop > -1 && idxForceStop != curPlaying) {
+          EndStatuses(curPlaying-1);
+          idxForceStop = -1;
           return;
         }
-        status[curPlaying] = STATUS_END;
+        EndStatuses(curPlaying);
         // if (pendingBytesQueue.length > 0) {
         //   schedulePlayback();
         // }
-        idxForceStop = 0;
+        idxForceStop = -1;
       };
       sourceNode.start();
       playStarts[curPlaying] = audioContext.currentTime;
@@ -340,7 +360,7 @@
                 if(pendingBytesQueue.length > 0) 
                   continue;
               
-                if(performance.now() - playStart > 2 * getRemainingTime(myCnt-1)) 
+                if(performance.now() - playStart > 1.2 * getRemainingTime(myCnt-1)) 
                   break;
               
               }
