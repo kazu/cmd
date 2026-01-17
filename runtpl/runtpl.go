@@ -313,8 +313,6 @@ func run2(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	io.Copy(w, resp.Body)
 
-	return
-
 }
 
 var fav http.HandlerFunc = staticer("favicon.ico")
