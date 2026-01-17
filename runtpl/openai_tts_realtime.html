@@ -88,6 +88,17 @@
             />
             <p class="text-xs text-gray-500 mt-1">同時にリクエストする音声の数（1-10）。大きいほどバッファリングが増えます。</p>
           </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">開始行番号:</label>
+            <input
+              type="number"
+              id="startLineNumber"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="0"
+              min="0"
+            />
+            <p class="text-xs text-gray-500 mt-1">この行番号から再生を開始します（0から開始）</p>
+          </div>
         </div>
 
         <!-- テキスト入力欄 -->
@@ -960,20 +971,34 @@
     document.getElementById("startButton").addEventListener("click", async () => {
       const apiKey = document.getElementById("apiKeyInput").value.trim();
       const textInput = document.getElementById("textInput").value.trim();
-      const texts = textInput.split("。").filter(t => t.length > 0);
+      const allTexts = textInput.split("。").filter(t => t.length > 0);
       
-      if (texts.length == 0) {
+      if (allTexts.length == 0) {
         alert("テキストを入力してください。");
         return;
       }
+
+      // UI から開始行番号を取得
+      const startLineInput = document.getElementById("startLineNumber");
+      const startLineNumber = Math.max(0, parseInt(startLineInput.value) || 0);
+      
+      // 開始行番号以降のテキストのみを処理
+      if (startLineNumber >= allTexts.length) {
+        alert(`開始行番号が大きすぎます。0～${allTexts.length - 1}の範囲で指定してください。`);
+        return;
+      }
+      
+      const texts = allTexts.slice(startLineNumber);
+      addLog(`開始行: ${startLineNumber}行目から（全${texts.length}行を処理）`);
 
       // UI から並行リクエスト数を取得
       const concurrentInput = document.getElementById("concurrentRequests");
       MAX_CONCURRENT_REQUESTS = parseInt(concurrentInput.value) || 3;
       MAX_CONCURRENT_REQUESTS = Math.max(1, Math.min(10, MAX_CONCURRENT_REQUESTS)); // 1-10 の範囲に制限
 
-      // 初期化
-      cnt = 0;
+      // 初期化（開始行番号を考慮）
+      cnt = startLineNumber;
+      nextPlayIndex = startLineNumber;
       status = [];
       playTexts = [];
       pendingBytes = new Uint8Array(0);
@@ -986,7 +1011,6 @@
       playbackQueue = []; // 再生待ちキューをクリア
       activeRequests.clear(); // リクエスト管理をクリア
       concurrentPlayDetected = false;
-      nextPlayIndex = 0; // 再生順序をリセット
       updateConcurrentPlayingDisplay();
       
       // 待機中表示を非表示
