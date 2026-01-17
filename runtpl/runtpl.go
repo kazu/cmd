@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	fileDir = "./tmpl/"
+	tmplDir  = "./tmpl/"
+	fileDir = "./tmpl/text/"
 )
 
 func IsExist(dir string) bool {
@@ -76,6 +77,24 @@ func list(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, "Content: %s\n", string(b))
 	}
+}
+
+func listfiles(w http.ResponseWriter, r *http.Request) {
+	files, err := os.ReadDir(fileDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var fileList []string
+	for _, file := range files {
+		if !file.IsDir() {
+			fileList = append(fileList, file.Name())
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]string{"files": fileList})
 }
 
 type RunReq struct {
@@ -230,7 +249,7 @@ func staticer(fname string) http.HandlerFunc {
 
 		fmt.Printf("message=%s\n", message)
 
-		f, err := os.Open(filepath.Join(fileDir, fname))
+		f, err := os.Open(filepath.Join(tmplDir, fname))
 		if err != nil {
 			fmt.Fprint(os.Stderr, "Error1: ", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -325,6 +344,7 @@ func main() {
 
 	http.HandleFunc("/set", set)
 	http.HandleFunc("/list", list)
+	http.HandleFunc("/listfiles", listfiles)
 	http.HandleFunc("/run", run)
 	http.HandleFunc("/run2", run2)
 	http.HandleFunc("/test", test)

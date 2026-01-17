@@ -67,6 +67,16 @@
         <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
           <label class="block mb-2 font-semibold text-gray-700">⚙️ 設定:</label>
           <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">再生テキストファイルを選択:</label>
+            <select
+              id="templateFileSelect"
+              class="block w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">-- ファイルを選択 --</option>
+            </select>
+            <p class="text-xs text-gray-500 mt-1">テンプレートディレクトリのファイルを選択して読み込みます</p>
+          </div>
+          <div class="mb-3">
             <label class="block mb-1 text-sm text-gray-600">並行リクエスト数（バッファサイズ）:</label>
             <input
               type="number"
@@ -90,6 +100,9 @@
             rows="8"
             placeholder="こんにちは。これはリアルタイムの音声合成デモです。複数の文を入力してください。"
           >[message]</textarea>
+          
+          <!-- テキスト表示欄（行ごと色付け用） -->
+          <div id="textDisplay" class="block w-full p-3 border border-gray-300 rounded-lg mb-3 bg-gray-50 min-h-32 max-h-64 overflow-y-auto font-mono text-sm leading-relaxed"></div>
           
           <!-- コントロールボタン -->
           <div class="flex gap-3 flex-wrap">
@@ -254,6 +267,7 @@
     async function waitForPreviousPlayback(myCnt) {
       const waitingNotice = document.getElementById("waitingNotice");
       const waitingInfo = document.getElementById("waitingInfo");
+      let hasLogged = false;
       
       // 自分より前の行が再生中の場合、終了まで待機
       while (activePlayingSources.size > 0) {
@@ -265,7 +279,11 @@
         waitingNotice.classList.remove("hidden");
         waitingInfo.textContent = `行${myCnt}が待機中 (再生中: [${otherPlaying.join(', ')}])`;
         
-        addLog(`行${myCnt}: 他の音声が再生中のため待機... (再生中: [${otherPlaying.join(', ')}])`);
+        // ログ出力は待機開始時に1回だけ
+        if (!hasLogged) {
+          addLog(`行${myCnt}: 他の音声が再生中のため待機... (再生中: [${otherPlaying.join(', ')}])`);
+          hasLogged = true;
+        }
         
         // 100ms 待機
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -567,6 +585,7 @@
         // 多重再生検知: 再生終了時に activePlayingSources から削除
         activePlayingSources.delete(myCnt);
         updateConcurrentPlayingDisplay();
+        highlightActiveLine();
 
         if (idxForceStop > -1 && idxForceStop != curPlaying) {
           EndStatuses(curPlaying - 1);
@@ -640,6 +659,62 @@
       document.getElementById("logContainer").innerHTML = "";
     });
 
+    // ========== テンプレートファイル選択機能 ==========
+    async function loadTemplateFiles() {
+      try {
+        const response = await fetch("http://10.2.1.15:19999/listfiles");
+        const data = await response.json();
+        const select = document.getElementById("templateFileSelect");
+        
+        // 既存のオプション（デフォルト）を保持
+        select.innerHTML = '<option value="">-- ファイルを選択 --</option>';
+        
+        // ファイルリストをセット（テキストファイルのみ）
+        data.files.forEach(file => {
+          if (!file.endsWith(".html")) { // HTMLファイル以外
+            const option = document.createElement("option");
+            option.value = file;
+            option.textContent = file;
+            select.appendChild(option);
+          }
+        });
+      } catch (error) {
+        console.error("テンプレートファイル一覧の読み込みエラー:", error);
+      }
+    }
+
+    // テンプレートファイル選択時の処理
+    document.getElementById("templateFileSelect").addEventListener("change", async (e) => {
+      const selectedFile = e.target.value;
+      if (!selectedFile) return;
+
+      try {
+        // GET リクエストでファイルの内容を取得
+        // サーバー側で [message] を置き換えてくれるはず
+        const response = await fetch(`http://10.2.1.15:19999/test?message=${encodeURIComponent(selectedFile)}`);
+        const html = await response.text();
+        
+        // HTMLパースして textarea の内容を抽出
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const textarea = doc.querySelector("#textInput");
+        
+        if (textarea) {
+          document.getElementById("textInput").value = textarea.textContent;
+          addLog(`テンプレート読み込み: ${selectedFile}`);
+        }
+      } catch (error) {
+        console.error("テンプレート読み込みエラー:", error);
+        addLog(`エラー: テンプレート「${selectedFile}」を読み込めません`);
+      }
+    });
+
+    // ページロード時にテンプレートファイル一覧を読み込む
+    window.addEventListener("load", () => {
+      updateTextDisplay();
+      loadTemplateFiles();
+    });
+
     // OpenAI TTS 設定（必要に応じて変更）
     const model = "voicevox-v1";
     const voice = "1";
@@ -680,9 +755,12 @@
           addLog(`APIレスポンス受信: 行${myCnt}`);
           console.log("request text: ", text);
           return response.body.getReader();
-        }).then((reader) => {
+        }).then(async (reader) => {
           // 前の行のデータが PUSHED になるまで待つ（リクエストは並行実行）
-          while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) { }
+          // ブロッキングを避けるため、polling を使用
+          while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
           resolve();
 
           function readChunk({ done, value }) {
@@ -706,29 +784,17 @@
 
                 addLog(`データ受信完了: 行${myCnt} (${pendingBytes.length}バイト)`);
 
-                // 前の行の再生終了を待つ
-                while (myCnt > 0 && status[myCnt - 1] < STATUS_END) {
-                  schedulePlayback(myCnt - 1);
-
-                  if (isPlaying)
-                    continue;
-
-                  if (pendingBytesQueue.length > 0)
-                    continue;
-
-                  if (performance.now() - playStart > 1.2 * getRemainingTime(myCnt - 1))
-                    break;
-                }
-
                 // ストリーム終わり時点でpendingBytesが残っていれば最終再生
                 if (pendingBytes.length > 0) {
                   pendingBytesQueue.push(pendingBytes);
                   status[myCnt] = STATUS_PUSHED;
                   updateStatusDisplay();
+                  addLog(`キューに追加: 行${myCnt} (キュー内: ${pendingBytesQueue.length})`);
+                  // 再生をスケジュール
                   schedulePlayback(myCnt);
+                  highlightActiveLine();
                 }
                 pendingBytes = new Uint8Array(0); // キューをクリア
-                addLog(`キューに追加: 行${myCnt} (キュー内: ${pendingBytesQueue.length})`);
 
                 return;
               }
@@ -776,7 +842,43 @@
         })
     };
 
-
+    // テキスト表示を更新する関数（行ごとの span 作成）
+    function updateTextDisplay() {
+      const textInput = document.getElementById("textInput").value.trim();
+      const texts = textInput.split("。").filter(t => t.length > 0);
+      const textDisplay = document.getElementById("textDisplay");
+      textDisplay.innerHTML = "";
+      
+      texts.forEach((text, index) => {
+        const span = document.createElement("span");
+        span.id = `text-line-${index}`;
+        span.className = "px-2 py-1 rounded transition-colors";
+        span.textContent = text + "。";
+        textDisplay.appendChild(span);
+        
+        if (index < texts.length - 1) {
+          textDisplay.appendChild(document.createTextNode(" "));
+        }
+      });
+    }
+    
+    // 再生中の行をハイライト
+    function highlightActiveLine() {
+      document.querySelectorAll("#textDisplay span").forEach(span => {
+        span.classList.remove("bg-yellow-300", "font-bold");
+      });
+      
+      Array.from(activePlayingSources.keys()).forEach(idx => {
+        const span = document.getElementById(`text-line-${idx}`);
+        if (span) {
+          span.classList.add("bg-yellow-300", "font-bold");
+        }
+      });
+    }
+    
+    // テキスト入力変更時に表示を更新
+    document.getElementById("textInput").addEventListener("change", updateTextDisplay);
+    document.getElementById("textInput").addEventListener("input", updateTextDisplay);
 
     document.getElementById("startButton").addEventListener("click", async () => {
       const apiKey = document.getElementById("apiKeyInput").value.trim();
@@ -811,6 +913,9 @@
       
       // 待機中表示を非表示
       document.getElementById("waitingNotice").classList.add("hidden");
+      
+      // テキスト表示を更新
+      updateTextDisplay();
 
       addLog(`再生開始: ${texts.length}行のテキストを処理します`);
       addLog(`並行リクエスト数: ${MAX_CONCURRENT_REQUESTS} 行`);
