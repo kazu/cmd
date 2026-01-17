@@ -282,11 +282,12 @@
     let isPlaying = false;
     let sourceNode = null;
     let idxForceStop = -1;
+    let nextPlayIndex = 0; // 次に再生予定の行番号
 
     // ========== 多重再生検知 ==========
     let activePlayingSources = new Map(); // { myCnt: { startTime, text, sourceNode } }
     let concurrentPlayDetected = false;
-    let playbackQueue = []; // 再生待ちのキュー
+    let playbackQueue = []; // 再生待ちのキュー（行番号を格納）
     
     // ========== 並行リクエスト管理 ==========
     let MAX_CONCURRENT_REQUESTS = 3; // 同時にリクエストする音声の数（UIから変更可能）
@@ -513,6 +514,12 @@
 
     // 再生をスケジューリングする関数
     async function schedulePlayback(myCnt) {
+      // 【順序チェック】この行番号が次に再生される予定の行番号でなければ、キューに追加して待機
+      if (myCnt !== nextPlayIndex) {
+        playbackQueue.push(myCnt);
+        addLog(`行${myCnt}: キューに登録（次は${nextPlayIndex}を待機）`);
+        return;
+      }
 
       if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
         isPlaying = false;
@@ -554,6 +561,7 @@
 
       curPlaying = myCnt;
       isPlaying = true;
+      nextPlayIndex++; // 次の再生対象を更新
 
       playStart = performance.now();
       const ctext = playTexts.shift();
@@ -626,6 +634,13 @@
         EndStatuses(curPlaying);
         addLog(`再生完了: 行${curPlaying}`);
         idxForceStop = -1;
+        
+        // 【順序制御】キューに待機している行があれば、次を再生開始
+        if (playbackQueue.length > 0) {
+          const nextIdx = playbackQueue.shift();
+          addLog(`キューから取り出し: 行${nextIdx}を再生開始`);
+          schedulePlayback(nextIdx);
+        }
       };
 
       sourceNode.start();
@@ -940,6 +955,7 @@
       playbackQueue = []; // 再生待ちキューをクリア
       activeRequests.clear(); // リクエスト管理をクリア
       concurrentPlayDetected = false;
+      nextPlayIndex = 0; // 再生順序をリセット
       updateConcurrentPlayingDisplay();
       
       // 待機中表示を非表示
