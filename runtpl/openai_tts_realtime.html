@@ -5,91 +5,171 @@
   <title>OpenAI TTS リアルタイム再生</title>
   <!-- Tailwind CSS をCDNから読み込む -->
   <script src="https://cdn.tailwindcss.com"></script>
-  
-</head>
-<body class="bg-gray-100">
-  <div class="max-w-screen-md mx-auto p-4">
-    <h1 class="text-2xl font-bold mb-4">OpenAI TTS リアルタイム再生デモ</h1>
-
-    <!-- API Key 入力欄 -->
-    <label class="block mb-2 font-medium">OpenAI API Key:</label>
-    <input
-      type="password"
-      id="apiKeyInput"
-      class="block w-full p-2 border border-gray-300 rounded mb-4"
-      placeholder="sk-xxxx..."
-    />
-
-    <!-- テキスト入力欄 -->
-    <label class="block mb-2 font-medium">合成したいテキスト:</label>
-    <textarea
-      id="textInput"
-      class="block w-full p-2 border border-gray-300 rounded mb-4"
-      rows="10"
-      placeholder="こんにちは、これはリアルタイムの音声合成デモです。"
-    >[message]</textarea>
-    <labal class="block mb-2 font-medium">現在の行:</labal>
-    <labal id="curIdx">0</labal>
-    <label id="prevText" class="block mb-2 font-medium">none</label>
-    <label id="currentText" class="block mb-2 font-medium">none</label>
-
-
-    <!-- 再生開始ボタン -->
-    <button
-      id="startButton"
-      class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-    >
-      再生開始
-    </button>
-    <button
-      id="pause"
-      class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-    >
-    一時停止
-  </button>
-  
-
-    <button
-      id="stop"
-      class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-    >
-      再生停止
-    </button>
-
+  <style>
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status-start { background-color: #dbeafe; color: #1e40af; }
+    .status-pushed { background-color: #fef3c7; color: #92400e; }
+    .status-end { background-color: #dcfce7; color: #166534; }
     
+    .waveform-container {
+      position: relative;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 to-slate-800">
+  <div class="max-w-4xl mx-auto p-6">
+    <!-- ヘッダー -->
+    <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+      <h1 class="text-3xl font-bold text-gray-800 mb-2">🎙️ OpenAI TTS リアルタイム再生デモ</h1>
+      <p class="text-gray-600">テキストをリアルタイムで音声に変換して自動再生します</p>
+    </div>
 
-    <!-- 波形表示用Canvas -->
-    <canvas
-      id="waveCanvas"
-      width="600"
-      height="200"
-      class="border border-gray-300 mt-4 w-full"
-    ></canvas>
+    <!-- メインコンテンツ -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- 左側：入力エリア -->
+      <div class="lg:col-span-2">
+        <!-- API Key 入力欄 -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <label class="block mb-2 font-semibold text-gray-700">🔑 OpenAI API Key:</label>
+          <input
+            type="password"
+            id="apiKeyInput"
+            class="block w-full p-3 border border-gray-300 rounded-lg mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="sk-xxxx..."
+          />
+          <p class="text-sm text-gray-500">APIキーはブラウザに保存されません</p>
+        </div>
+
+        <!-- テキスト入力欄 -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <label class="block mb-2 font-semibold text-gray-700">📝 合成したいテキスト:</label>
+          <p class="text-sm text-gray-500 mb-3">「。」で区切られた文ごとに順番に再生されます</p>
+          <textarea
+            id="textInput"
+            class="block w-full p-3 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+            rows="8"
+            placeholder="こんにちは。これはリアルタイムの音声合成デモです。複数の文を入力してください。"
+          >[message]</textarea>
+          
+          <!-- コントロールボタン -->
+          <div class="flex gap-3 flex-wrap">
+            <button
+              id="startButton"
+              class="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-md hover:shadow-lg"
+            >
+              ▶️ 再生開始
+            </button>
+            <button
+              id="pause"
+              class="bg-gradient-to-r from-yellow-500 to-yellow-600 hover:from-yellow-600 hover:to-yellow-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-md hover:shadow-lg"
+            >
+              ⏸️ 一時停止
+            </button>
+            <button
+              id="stop"
+              class="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-md hover:shadow-lg"
+            >
+              ⏹️ 再生停止
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右側：ステータスパネル -->
+      <div class="lg:col-span-1">
+        <div class="bg-white rounded-lg shadow-lg p-6 sticky top-6">
+          <h2 class="text-lg font-bold text-gray-800 mb-4">📊 再生状態</h2>
+          
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-1">現在の行番号</p>
+            <p class="text-3xl font-bold text-blue-600" id="curIdx">0</p>
+          </div>
+
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">前の文</p>
+            <div class="bg-gray-50 p-3 rounded text-sm text-gray-700 min-h-12" id="prevText">-</div>
+          </div>
+
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">現在の文</p>
+            <div class="bg-blue-50 p-3 rounded text-sm text-gray-700 font-semibold min-h-12 border-l-4 border-blue-500" id="currentText">-</div>
+          </div>
+
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">処理状況</p>
+            <div id="statusContainer" class="space-y-2 max-h-40 overflow-y-auto"></div>
+          </div>
+
+          <div class="pt-4 border-t">
+            <p class="text-sm text-gray-600 mb-2">再生時間情報</p>
+            <div class="bg-gray-50 p-2 rounded text-xs text-gray-700 font-mono space-y-1">
+              <div>経過: <span id="elapsedTime">0.0</span>秒</div>
+              <div>残り: <span id="remainingTime">0.0</span>秒</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 波形表示 -->
+    <div class="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <h2 class="text-lg font-bold text-gray-800 mb-4">🎵 波形表示</h2>
+      <div class="waveform-container">
+        <canvas
+          id="waveCanvas"
+          width="800"
+          height="200"
+          class="w-full"
+        ></canvas>
+      </div>
+    </div>
+
+    <!-- ログパネル -->
+    <div class="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <h2 class="text-lg font-bold text-gray-800 mb-4">📋 デバッグログ</h2>
+      <div id="logContainer" class="bg-gray-900 text-gray-100 p-4 rounded font-mono text-xs h-40 overflow-y-auto"></div>
+      <button id="clearLog" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white py-1 px-3 rounded text-sm">
+        ログをクリア
+      </button>
+    </div>
   </div>
 
   <script>
-    // AudioContext の初期化（サンプルレート24kHz指定の例）
+    // ========== ロギング機能 ==========
+    function addLog(message) {
+      const logContainer = document.getElementById("logContainer");
+      const timestamp = new Date().toLocaleTimeString('ja-JP');
+      const logEntry = document.createElement("div");
+      logEntry.textContent = `[${timestamp}] ${message}`;
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    // ========== AudioContext の初期化 ==========
     const audioContext = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: 24000
     });
 
-    // 受信したPCM16データを一時的に貯めるキュー
+    // ========== 受信データ管理 ==========
     let pendingBytes = new Uint8Array(0);
     let pendingBytesQueue = new Array(0);
-
-    // 閾値（ある程度溜めてから再生する）
-    const bufferThreshold = 32 * 1024; // 32KB
-
-    // leftover: 受信バイトが2バイト単位にならない場合、その端数を次回に回す
     let leftover = new Uint8Array(0);
 
-    // 再生制御フラグ
+    // ========== 再生制御フラグ ==========
     let isPlaying = false;
     let sourceNode = null;
-    let isReady = false;
     let idxForceStop = -1;
 
-    // AnalyserNode（波形可視化用）
+    // ========== AnalyserNode（波形可視化用） ==========
     const analyserNode = audioContext.createAnalyser();
     analyserNode.fftSize = 1024;
     const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
@@ -98,8 +178,12 @@
     const waveCanvas = document.getElementById("waveCanvas");
     const waveCtx = waveCanvas.getContext("2d");
 
-    const playTimeout = 10 * 1000; // 10秒
-    const intervalPerLine = 2; 
+    // ========== 時間管理 ==========
+    const playTimeout = 15 * 1000; // 15秒
+    const intervalPerLine = 0.5; // 行間の時間（秒）
+    
+    // 各アイテムの実際の再生時間を記録する辞書
+    let actualDurations = {}; // { myCnt: duration } 
 
     /**
      * 波形を描画する関数
@@ -107,14 +191,14 @@
     function drawWaveform() {
       requestAnimationFrame(drawWaveform);
       // 背景をクリア
-      waveCtx.fillStyle = "#000";
+      waveCtx.fillStyle = "#667eea";
       waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
 
       // time domain data を取得
       analyserNode.getByteTimeDomainData(dataArray);
 
       waveCtx.lineWidth = 2;
-      waveCtx.strokeStyle = "lime";
+      waveCtx.strokeStyle = "#fff";
       waveCtx.beginPath();
 
       const sliceWidth = waveCanvas.width * 1.0 / dataArray.length;
@@ -136,11 +220,8 @@
     }
 
     let playTexts = new Array(0);
-
     let playStart = performance.now();
-
     let status = new Array(0);
-    let remainDurs = new Array(0);
     let playStarts = new Array(0);
 
     const STATUS_START = 0;
@@ -149,50 +230,85 @@
 
     let curPlaying = 0;
 
-    function EndStatuses(cur) {
-      if (cur - 5 < 0){
+    // ========== ステータス更新表示 ==========
+    function updateStatusDisplay() {
+      const container = document.getElementById("statusContainer");
+      container.innerHTML = "";
+      
+      // 最新の5件までを表示
+      const startIdx = Math.max(0, status.length - 5);
+      for (let i = startIdx; i < status.length; i++) {
+        const statusText = ["待機中", "準備中", "完了"][status[i]] || "不明";
+        const statusClass = ["status-start", "status-pushed", "status-end"][status[i]] || "status-start";
+        
+        const div = document.createElement("div");
+        div.className = `text-xs truncate`;
+        div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}`;
+        container.appendChild(div);
+      }
+    }
+
+    function updateTimerDisplay() {
+      if (curPlaying < 0 || !playStarts[curPlaying]) {
+        document.getElementById("elapsedTime").textContent = "0.0";
+        document.getElementById("remainingTime").textContent = "0.0";
         return;
       }
 
-      for (let i = cur-5; i < cur; i++) {
+      if (isPlaying && sourceNode && sourceNode.buffer) {
+        const elapsed = audioContext.currentTime - playStarts[curPlaying];
+        const remaining = sourceNode.buffer.duration - elapsed;
+        document.getElementById("elapsedTime").textContent = elapsed.toFixed(1);
+        document.getElementById("remainingTime").textContent = Math.max(0, remaining).toFixed(1);
+      }
+    }
+
+    // タイマーループ
+    setInterval(updateTimerDisplay, 100);
+
+    function EndStatuses(cur) {
+      if (cur - 5 < 0) {
+        return;
+      }
+
+      for (let i = Math.max(0, cur - 5); i <= cur; i++) {
         if (status[i] != STATUS_END) {
           status[i] = STATUS_END;
         }
       }
-      status[cur] = STATUS_END;
+      updateStatusDisplay();
     }
 
     function getRemainingTime(myCnt) {
+      // 実際に記録された再生時間を使う
+      if (actualDurations[myCnt] !== undefined) {
+        return actualDurations[myCnt] * 1000 + 500; // 余裕を持たせる
+      }
+      
       if (sourceNode == null) {
         return playTimeout;
       }
-      // if( playStarts[myCnt] == undefined) {
-      //   return playTimeout;
-      // }
 
-      // const elapsed = audioContext.currentTime - playStarts[myCnt];
       const totalDuration = sourceNode.buffer.duration + intervalPerLine;
-      // const remaining = totalDuration - elapsed;
-      // return Math.max(0, remaining) * 1000; // ミリ秒に変換
-      return  Math.max(playTimeout, totalDuration*1000);     
+      return Math.max(playTimeout, totalDuration * 1000);
     }
 
     // 再生をスケジューリングする関数
     async function schedulePlayback(myCnt) {
 
       if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
-        isPlaying = false
+        isPlaying = false;
         EndStatuses(curPlaying);
         idxForceStop = curPlaying;
+        addLog(`強制停止: ${curPlaying} (タイムアウト)`);
         console.log("force stop: ", curPlaying);
-        const curElapsed = performance.now() - playStart
-        const dur =  getRemainingTime(myCnt);
-        console.log("elapsed=", curElapsed /1000, 
-                    "remaining=", dur / 1000,
-                    "total=", sourceNode.buffer.duration);
+        const curElapsed = performance.now() - playStart;
+        const dur = getRemainingTime(myCnt);
+        console.log("elapsed=", curElapsed / 1000,
+          "remaining=", dur / 1000,
+          "total=", sourceNode.buffer.duration);
         return;
       }
-
 
       // すでに再生中ならスキップ
       if (isPlaying) return;
@@ -203,11 +319,12 @@
       isPlaying = true;
 
       playStart = performance.now();
-      const ctext = playTexts.shift()
-      document.getElementById("prevText").innerText = document.getElementById("currentText").innerText
-      document.getElementById("currentText").innerText = ctext
-      document.getElementById("curIdx").innerText = curPlaying
+      const ctext = playTexts.shift();
+      document.getElementById("prevText").innerText = document.getElementById("currentText").innerText;
+      document.getElementById("currentText").innerText = ctext;
+      document.getElementById("curIdx").innerText = curPlaying;
 
+      addLog(`再生開始: 行${curPlaying} "${ctext.substring(0, 20)}..."`);
       console.log("pop text", ctext);
       console.log("pop qeueue len=", pendingBytesQueue.length);
 
@@ -227,6 +344,11 @@
       const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
       audioBuffer.copyToChannel(float32Data, 0);
 
+      // 実際の再生時間を記録
+      const actualDuration = audioBuffer.duration;
+      actualDurations[myCnt] = actualDuration;
+      addLog(`音声データ長: 行${myCnt} ${actualDuration.toFixed(2)}秒`);
+
       // AudioBufferSourceNode で再生
       sourceNode = audioContext.createBufferSource();
       sourceNode.buffer = audioBuffer;
@@ -234,42 +356,43 @@
       // AnalyserNode→destination へ接続
       sourceNode.connect(analyserNode);
       analyserNode.connect(audioContext.destination);
+
       // 再生終了時のイベント
       sourceNode.onended = () => {
         isPlaying = false;
-        
-        if(idxForceStop > -1 && idxForceStop != curPlaying) {
-          EndStatuses(curPlaying-1);
+
+        if (idxForceStop > -1 && idxForceStop != curPlaying) {
+          EndStatuses(curPlaying - 1);
           idxForceStop = -1;
           return;
         }
         EndStatuses(curPlaying);
-        // if (pendingBytesQueue.length > 0) {
-        //   schedulePlayback();
-        // }
+        addLog(`再生完了: 行${curPlaying}`);
         idxForceStop = -1;
       };
+
       sourceNode.start();
       playStarts[curPlaying] = audioContext.currentTime;
-     
     }
 
-    // 波形描画開始（ページを開いた直後〜終了までは常に波形を更新し続ける）
-    //drawWaveform();
+    // 波形描画開始
+    drawWaveform();
 
-    isPuase = false
-    isStop = false
+    isPause = false;
+    isStop = false;
 
     document.getElementById("pause").addEventListener("click", () => {
-      if (isPuase) {
+      if (isPause) {
         audioContext.resume().then(() => {
-          isPuase = false;
-          document.getElementById("pause").innerText = "一時停止";
+          isPause = false;
+          document.getElementById("pause").innerText = "⏸️ 一時停止";
+          addLog("再開しました");
         });
       } else {
         audioContext.suspend().then(() => {
-          isPuase = true;
-          document.getElementById("pause").innerText = "再開";
+          isPause = true;
+          document.getElementById("pause").innerText = "▶️ 再開";
+          addLog("一時停止しました");
         });
       }
     });
@@ -283,7 +406,13 @@
         isPlaying = false; // 再生中フラグをリセット
         pendingBytes = new Uint8Array(0); // キューをクリア
         leftover = new Uint8Array(0); // leftover をクリア
+        addLog("再生を停止しました");
       }
+    });
+
+    // ログクリアボタン
+    document.getElementById("clearLog").addEventListener("click", () => {
+      document.getElementById("logContainer").innerHTML = "";
     });
 
     // OpenAI TTS 設定（必要に応じて変更）
@@ -291,165 +420,172 @@
     const voice = "1";
     const responseFormat = "pcm";
 
-    
-
     let cnt = 0;
 
     const f = (text) => {
       return new Promise((resolve) =>
-      setTimeout(() => {
-        playTexts.push(text)
+        setTimeout(() => {
+          playTexts.push(text);
 
-        const myCnt = cnt++;
+          const myCnt = cnt++;
 
-        status[myCnt] = STATUS_START;
+          status[myCnt] = STATUS_START;
+          updateStatusDisplay();
 
+          addLog(`APIリクエスト送信: 行${myCnt} "${text.substring(0, 30)}..."`);
 
-        // while(playTexts.length > 5 || ( myCnt > 3 && status[myCnt-2] == false)) {
-        //   schedulePlayback();
-        // }
-
-        
-        fetch("http://10.2.1.15:19999/run2", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: model,
-            input: text,
-            voice: voice,
-            speed: 1,
-            response_format: responseFormat
-          })
-        }).then((response) => {
-          if (!response.ok) {
-            throw new Error(`OpenAI API error: ${response.status}`);
-          }
-          console.log("request text: ", text);
-          return response.body.getReader();
-        }).then((reader) => {
-          while( myCnt >  0 && status[myCnt-1] < STATUS_PUSHED) { } 
-          resolve();
-
-          function readChunk({done, value}) {
-            if (isStop) {
-              return;
+          fetch("http://10.2.1.15:19999/run2", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: model,
+              input: text,
+              voice: voice,
+              speed: 1,
+              response_format: responseFormat
+            })
+          }).then((response) => {
+            if (!response.ok) {
+              throw new Error(`OpenAI API error: ${response.status}`);
             }
-            
-            if (done) {
-              // ストリーム終了時: leftover が2バイト以上あれば pendingBytes に追加
-              if (leftover.length >= 2) {
-                const leftoverUseBytes = leftover.length - (leftover.length % 2);
-                if (leftoverUseBytes > 0) {
-                  const leftoverChunk = leftover.slice(0, leftoverUseBytes);
-                  const newPending = new Uint8Array(pendingBytes.length + leftoverChunk.length);
-                  newPending.set(pendingBytes, 0);
-                  newPending.set(leftoverChunk, pendingBytes.length);
-                  pendingBytes = newPending;
-                }
+            addLog(`APIレスポンス受信: 行${myCnt}`);
+            console.log("request text: ", text);
+            return response.body.getReader();
+          }).then((reader) => {
+            // 前の行が処理されるまで待つ
+            while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) { }
+            resolve();
+
+            function readChunk({ done, value }) {
+              if (isStop) {
+                return;
               }
+
+              if (done) {
+                // ストリーム終了時: leftover が2バイト以上あれば pendingBytes に追加
+                if (leftover.length >= 2) {
+                  const leftoverUseBytes = leftover.length - (leftover.length % 2);
+                  if (leftoverUseBytes > 0) {
+                    const leftoverChunk = leftover.slice(0, leftoverUseBytes);
+                    const newPending = new Uint8Array(pendingBytes.length + leftoverChunk.length);
+                    newPending.set(pendingBytes, 0);
+                    newPending.set(leftoverChunk, pendingBytes.length);
+                    pendingBytes = newPending;
+                  }
+                }
+                leftover = new Uint8Array(0);
+
+                addLog(`データ受信完了: 行${myCnt} (${pendingBytes.length}バイト)`);
+
+                // 前の行の再生終了を待つ
+                while (myCnt > 0 && status[myCnt - 1] < STATUS_END) {
+                  schedulePlayback(myCnt - 1);
+
+                  if (isPlaying)
+                    continue;
+
+                  if (pendingBytesQueue.length > 0)
+                    continue;
+
+                  if (performance.now() - playStart > 1.2 * getRemainingTime(myCnt - 1))
+                    break;
+                }
+
+                // ストリーム終わり時点でpendingBytesが残っていれば最終再生
+                if (pendingBytes.length > 0) {
+                  pendingBytesQueue.push(pendingBytes);
+                  status[myCnt] = STATUS_PUSHED;
+                  updateStatusDisplay();
+                  schedulePlayback(myCnt);
+                }
+                pendingBytes = new Uint8Array(0); // キューをクリア
+                addLog(`キューに追加: 行${myCnt} (キュー内: ${pendingBytesQueue.length})`);
+
+                return;
+              }
+
+              // 今回受信した value (Uint8Array) を leftover と結合
+              const combined = new Uint8Array(leftover.length + value.length);
+              combined.set(leftover, 0);
+              combined.set(value, leftover.length);
+
+              // leftover はクリア
               leftover = new Uint8Array(0);
 
-              while(myCnt > 0 && status[myCnt-1] < STATUS_END) {
-                schedulePlayback(myCnt-1);
-              
-                if(isPlaying)
-                  continue;
-              
-                if(pendingBytesQueue.length > 0) 
-                  continue;
-              
-                if(performance.now() - playStart > 1.2 * getRemainingTime(myCnt-1)) 
-                  break;
-              
+              // 2バイト単位で取り出せるサイズ
+              const useBytes = combined.length - (combined.length % 2);
+              if (useBytes > 0) {
+                // 再生用pendingBytesに追加
+                const validChunk = combined.slice(0, useBytes);
+                const newPending = new Uint8Array(pendingBytes.length + validChunk.length);
+                newPending.set(pendingBytes, 0);
+                newPending.set(validChunk, pendingBytes.length);
+                pendingBytes = newPending;
               }
 
-              // ストリーム終わり時点でpendingBytesが残っていれば最終再生
-              if (pendingBytes.length > 0) {
-                pendingBytesQueue.push(pendingBytes);
-                status[myCnt] = STATUS_PUSHED;
-                schedulePlayback(myCnt);
+              // 端数を leftover に退避
+              if (useBytes < combined.length) {
+                leftover = combined.slice(useBytes);
               }
-              pendingBytes = new Uint8Array(0); // キューをクリア
-              console.log("push qeueue:", myCnt);
 
-              return;
+              console.log("start reading");
+              // 次の値を読みにいく。
+              reader.read().then(readChunk);
             }
 
-            // 今回受信した value (Uint8Array) を leftover と結合
-            const combined = new Uint8Array(leftover.length + value.length);
-            combined.set(leftover, 0);
-            combined.set(value, leftover.length);
-
-            // leftover はクリア
-            leftover = new Uint8Array(0);
-
-            // 2バイト単位で取り出せるサイズ
-            const useBytes = combined.length - (combined.length % 2);
-            if (useBytes > 0) {
-              // 再生用pendingBytesに追加
-              const validChunk = combined.slice(0, useBytes);
-              const newPending = new Uint8Array(pendingBytes.length + validChunk.length);
-              newPending.set(pendingBytes, 0);
-              newPending.set(validChunk, pendingBytes.length);
-              pendingBytes = newPending;
-            }
-
-            // 端数を leftover に退避
-            if (useBytes < combined.length) {
-              leftover = combined.slice(useBytes);
-            }
-
-            // ある程度たまったら再生開始
-            // if (pendingBytes.length >= bufferThreshold) {
-            //   schedulePlayback(myCnt);
-            // }
-
-            console.log("start reading");
-            // 次の値を読みにいく。
+            // ストリームを読み取る
             reader.read().then(readChunk);
-          }
 
-          // ストリームを読み取る
-          reader.read().then(readChunk);
-        
-          
+          }).catch((error) => {
+            addLog(`エラー: 行${myCnt} - ${error.message}`);
+            console.error("エラー:", error);
+          });
 
-        });
-       
-       
-      }, Math.random() * 1000))
+        }, Math.random() * 500))
     };
 
 
 
     document.getElementById("startButton").addEventListener("click", async () => {
       const apiKey = document.getElementById("apiKeyInput").value.trim();
-      const texts = document.getElementById("textInput").value.trim().split("。");
-       //if (!apiKey || texts.length == 0 ) { 
-      if (texts.length == 0 ) { 
-        alert("API Key と合成テキストを入力してください。");
+      const textInput = document.getElementById("textInput").value.trim();
+      const texts = textInput.split("。").filter(t => t.length > 0);
+      
+      if (texts.length == 0) {
+        alert("テキストを入力してください。");
         return;
       }
 
+      // 初期化
+      cnt = 0;
+      status = [];
+      playTexts = [];
+      pendingBytes = new Uint8Array(0);
+      pendingBytesQueue = [];
+      leftover = new Uint8Array(0);
+      isPlaying = false;
+      isStop = false;
+      actualDurations = {};
 
-
-      document.getElementById("currentText").innerText = texts[0].trim()
+      addLog(`再生開始: ${texts.length}行のテキストを処理します`);
+      document.getElementById("currentText").innerText = texts[0].trim();
+      updateStatusDisplay();
 
       try {
         await texts.reduce(
-          (p, v) => p.then(() => f(v)),
+          (p, v) => p.then(() => f(v.trim())),
           Promise.resolve()
         );
-       
+        
+        addLog("すべてのテキストの処理が完了しました");
       
       } catch (error) {
+        addLog(`エラーが発生しました: ${error.message}`);
         console.error("エラー:", error);
         alert("エラーが発生しました。コンソールをご確認ください。");
       }
-
-  
     });
   </script>
 </body>
