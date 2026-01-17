@@ -993,8 +993,12 @@
           let availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
           
           // 再生待ち行数がMAX_CONCURRENT_REQUESTS以上の場合は待機
+          let waitLoggedOnce = false; // 待機ログを1回だけ出力するためのフラグ
           while (availableSlots <= 0) {
-            addLog(`⏸️ 再生待ち行数が多いため待機中（待ち：${pendingBytesQueue.length}行、最大：${MAX_CONCURRENT_REQUESTS}行）`);
+            if (!waitLoggedOnce) {
+              addLog(`⏸️ 再生待ち行数が多いため待機中（待ち：${pendingBytesQueue.length}行、最大：${MAX_CONCURRENT_REQUESTS}行）`);
+              waitLoggedOnce = true;
+            }
             await new Promise(resolve => setTimeout(resolve, 500));
             availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
           }
