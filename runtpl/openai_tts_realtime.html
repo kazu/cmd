@@ -336,7 +336,7 @@
 
     // ========== 時間管理 ==========
     const playTimeout = 15 * 1000; // 15秒
-    const intervalPerLine = 0.5; // 行間の時間（秒）
+    const intervalPerLine = 1.0; // 行間の時間（秒）
     
     // 各アイテムの実際の再生時間を記録する辞書
     let actualDurations = {}; // { myCnt: duration } 
@@ -592,6 +592,21 @@
         float32Data[i] = int16Data[i] / 32768.0;
       }
 
+      // 【ポップノイズ対策】フェードイン/フェードアウトを適用
+      const fadeLength = Math.min(480, Math.floor(float32Data.length * 0.02)); // 20ms または全体の2%
+      
+      // フェードイン（最初の部分）
+      for (let i = 0; i < fadeLength; i++) {
+        const fadeMultiplier = i / fadeLength;
+        float32Data[i] *= fadeMultiplier;
+      }
+      
+      // フェードアウト（最後の部分）
+      for (let i = 0; i < fadeLength; i++) {
+        const fadeMultiplier = i / fadeLength;
+        float32Data[float32Data.length - 1 - i] *= fadeMultiplier;
+      }
+
       // AudioBuffer 作成 (モノラル:1ch)
       const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
       audioBuffer.copyToChannel(float32Data, 0);
@@ -647,10 +662,12 @@
         if (playbackQueue.length > 0) {
           const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
           if (nextIdxPosition >= 0) {
-            // 見つかった場合は削除して再生開始
+            // 見つかった場合は削除して、インターバル後に再生開始
             playbackQueue.splice(nextIdxPosition, 1);
-            addLog(`キューから取り出し: 行${nextPlayIndex}を再生開始`);
-            schedulePlayback(nextPlayIndex);
+            addLog(`キューから取り出し: 行${nextPlayIndex}を${intervalPerLine}秒後に再生開始`);
+            setTimeout(() => {
+              schedulePlayback(nextPlayIndex);
+            }, intervalPerLine * 1000);
           } else {
             addLog(`警告: キューに次の行${nextPlayIndex}が見つかりません（キュー: [${playbackQueue.join(', ')}]）`);
           }
