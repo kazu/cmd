@@ -130,9 +130,13 @@
 
       <!-- 右側：ステータスパネル -->
       <div class="lg:col-span-1">
-        <div class="bg-white rounded-lg shadow-lg p-6 sticky top-6">
-          <h2 class="text-lg font-bold text-gray-800 mb-4">📊 再生状態</h2>
+        <div id="statusPanel" class="bg-white rounded-lg shadow-lg p-6 sticky top-6">
+          <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="togglePanel('statusContent', 'statusIcon')">
+            <h2 class="text-lg font-bold text-gray-800">📊 再生状態</h2>
+            <span id="statusIcon" class="text-gray-500 text-xl transition-transform">▼</span>
+          </div>
           
+          <div id="statusContent">
           <div class="mb-4">
             <p class="text-sm text-gray-600 mb-1">現在の行番号</p>
             <p class="text-3xl font-bold text-blue-600" id="curIdx">0</p>
@@ -199,13 +203,18 @@
               <div>残り: <span id="remainingTime">0.0</span>秒</div>
             </div>
           </div>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- 波形表示 -->
-    <div class="bg-white rounded-lg shadow-lg p-6 mt-6">
-      <h2 class="text-lg font-bold text-gray-800 mb-4">🎵 波形表示</h2>
+    <div id="wavePanel" class="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="togglePanel('waveContent', 'waveIcon')">
+        <h2 class="text-lg font-bold text-gray-800">🎵 波形表示</h2>
+        <span id="waveIcon" class="text-gray-500 text-xl transition-transform">▼</span>
+      </div>
+      <div id="waveContent">
       <div class="waveform-container">
         <canvas
           id="waveCanvas"
@@ -214,19 +223,41 @@
           class="w-full"
         ></canvas>
       </div>
+      </div>
     </div>
 
     <!-- ログパネル -->
-    <div class="bg-white rounded-lg shadow-lg p-6 mt-6">
-      <h2 class="text-lg font-bold text-gray-800 mb-4">📋 デバッグログ</h2>
+    <div id="logPanel" class="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="togglePanel('logContent', 'logIcon')">
+        <h2 class="text-lg font-bold text-gray-800">📋 デバッグログ</h2>
+        <span id="logIcon" class="text-gray-500 text-xl transition-transform">▼</span>
+      </div>
+      <div id="logContent">
       <div id="logContainer" class="bg-gray-900 text-gray-100 p-4 rounded font-mono text-xs h-40 overflow-y-auto"></div>
       <button id="clearLog" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white py-1 px-3 rounded text-sm">
         ログをクリア
       </button>
+      </div>
     </div>
   </div>
 
   <script>
+    // ========== パネル折りたたみ機能 ==========
+    function togglePanel(contentId, iconId) {
+      const content = document.getElementById(contentId);
+      const icon = document.getElementById(iconId);
+      
+      if (content.style.display === 'none') {
+        content.style.display = '';
+        icon.textContent = '▼';
+        icon.style.transform = 'rotate(0deg)';
+      } else {
+        content.style.display = 'none';
+        icon.textContent = '▶';
+        icon.style.transform = 'rotate(-90deg)';
+      }
+    }
+
     // ========== ロギング機能 ==========
     function addLog(message) {
       const logContainer = document.getElementById("logContainer");
