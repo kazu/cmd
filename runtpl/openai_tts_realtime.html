@@ -391,19 +391,26 @@
       const container = document.getElementById("statusContainer");
       container.innerHTML = "";
       
-      // 最新の5件までを表示
-      const startIdx = Math.max(0, status.length - 5);
-      for (let i = startIdx; i < status.length; i++) {
+      // 完了していない行かつ再生中でない行（準備中、再生待ち）のみを収集
+      // かつ現在再生中の行より後ろの行のみを表示
+      const activeItems = [];
+      for (let i = 0; i < status.length; i++) {
+        // STATUS_END でなく、かつ再生中でない行、かつ curPlaying より後ろの行
+        if (status[i] !== STATUS_END && !activePlayingSources.has(i) && i > curPlaying) {
+          activeItems.push(i);
+        }
+      }
+      
+      // 最新の5件の未完了・未再生中項目を表示
+      const displayItems = activeItems.slice(Math.max(0, activeItems.length - 5));
+      
+      for (const i of displayItems) {
         const statusText = ["準備中", "再生待ち", "完了"][status[i]] || "不明";
         const statusClass = ["status-start", "status-pushed", "status-end"][status[i]] || "status-start";
         
-        // 多重再生チェック：この行が現在再生中かつ他にも再生中の行がある場合
-        const isConcurrent = activePlayingSources.has(i) && activePlayingSources.size > 1;
-        const concurrentClass = isConcurrent ? "concurrent-item" : "";
-        
         const div = document.createElement("div");
-        div.className = `text-xs truncate ${concurrentClass}`;
-        div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}${isConcurrent ? ' ⚠️' : ''}`;
+        div.className = `text-xs truncate`;
+        div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}`;
         container.appendChild(div);
       }
       
@@ -636,10 +643,17 @@
         idxForceStop = -1;
         
         // 【順序制御】キューに待機している行があれば、次を再生開始
+        // nextPlayIndex と一致する行を探す
         if (playbackQueue.length > 0) {
-          const nextIdx = playbackQueue.shift();
-          addLog(`キューから取り出し: 行${nextIdx}を再生開始`);
-          schedulePlayback(nextIdx);
+          const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
+          if (nextIdxPosition >= 0) {
+            // 見つかった場合は削除して再生開始
+            playbackQueue.splice(nextIdxPosition, 1);
+            addLog(`キューから取り出し: 行${nextPlayIndex}を再生開始`);
+            schedulePlayback(nextPlayIndex);
+          } else {
+            addLog(`警告: キューに次の行${nextPlayIndex}が見つかりません（キュー: [${playbackQueue.join(', ')}]）`);
+          }
         }
       };
 
@@ -975,8 +989,18 @@
         let currentIndex = 0;
         
         while (currentIndex < texts.length) {
-          // 現在のバッチを取得（最大 MAX_CONCURRENT_REQUESTS 個）
-          const batchSize = Math.min(MAX_CONCURRENT_REQUESTS, texts.length - currentIndex);
+          // 【動的並行リクエスト制御】再生待ち行数を考慮して有効リクエスト数を計算
+          let availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+          
+          // 再生待ち行数がMAX_CONCURRENT_REQUESTS以上の場合は待機
+          while (availableSlots <= 0) {
+            addLog(`⏸️ 再生待ち行数が多いため待機中（待ち：${pendingBytesQueue.length}行、最大：${MAX_CONCURRENT_REQUESTS}行）`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+          }
+          
+          // 現在のバッチを取得（最大で有効スロット数まで）
+          const batchSize = Math.min(availableSlots, texts.length - currentIndex);
           const batch = [];
           
           for (let i = 0; i < batchSize; i++) {
@@ -984,7 +1008,7 @@
             batch.push(f(text));
           }
           
-          addLog(`バッチ処理: 行${currentIndex}～${currentIndex + batchSize - 1} (${batchSize}行)`);
+          addLog(`バッチ処理: 行${currentIndex}～${currentIndex + batchSize - 1} (${batchSize}行、有効スロット：${availableSlots}/${MAX_CONCURRENT_REQUESTS})`);
           
           // このバッチの全リクエストが完了するまで待機
           await Promise.all(batch);
