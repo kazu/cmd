@@ -3,11 +3,12 @@ version: '3.8'
 services:
   runtpl:
     build:
-      context: .
+      context: ..
+      dockerfile: runtpl/Dockerfile
     ports:
       - "19999:19999"
     volumes:
-      - ./tmpl:/app/tmpl
+      - /var/snap/docker/common/var-lib-docker/volumes/kazu-cmd/_data/cmd/runtpl/tmpl:/app/tmpl
     environment:
       - LOG_LEVEL=info
     container_name: runtpl-server

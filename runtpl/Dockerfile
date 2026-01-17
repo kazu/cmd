@@ -4,13 +4,14 @@ FROM golang:1.24.4-alpine AS builder
 WORKDIR /build
 
 # キャッシュを活用するため、go.mod と go.sum を先にコピー
-COPY ../go.mod ../go.sum ./
+COPY go.mod go.sum ./
 
 # 依存関係をダウンロード
 RUN go mod download
 
-# ソースコードをコピー
-COPY . .
+# runtpl ディレクトリのソースコードをコピー
+COPY runtpl/ ./runtpl/
+WORKDIR /build/runtpl
 
 # Go アプリケーションをビルド
 RUN CGO_ENABLED=0 GOOS=linux go build -o runtpl .
@@ -24,13 +25,13 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates
 
 # ビルドステージからバイナリをコピー
-COPY --from=builder /build/runtpl .
+COPY --from=builder /build/runtpl/runtpl .
 
 # テンプレートファイルディレクトリを作成
 RUN mkdir -p tmpl
 
 # HTML ファイルをコピー
-COPY openai_tts_realtime.html tmpl/
+COPY runtpl/openai_tts_realtime.html tmpl/
 
 # ポート19999を公開
 EXPOSE 19999
