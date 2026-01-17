@@ -63,6 +63,23 @@
           <p class="text-sm text-gray-500">APIキーはブラウザに保存されません</p>
         </div>
 
+        <!-- 設定欄 -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <label class="block mb-2 font-semibold text-gray-700">⚙️ 設定:</label>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">並行リクエスト数（バッファサイズ）:</label>
+            <input
+              type="number"
+              id="concurrentRequests"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="3"
+              min="1"
+              max="10"
+            />
+            <p class="text-xs text-gray-500 mt-1">同時にリクエストする音声の数（1-10）。大きいほどバッファリングが増えます。</p>
+          </div>
+        </div>
+
         <!-- テキスト入力欄 -->
         <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
           <label class="block mb-2 font-semibold text-gray-700">📝 再生したいテキスト:</label>
@@ -153,6 +170,15 @@
             </div>
           </div>
 
+          <!-- バッファ状況 -->
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">バッファ状況</p>
+            <div class="bg-gray-50 p-2 rounded text-xs text-gray-700 space-y-1">
+              <div>リクエスト中: <span id="requestingCount" class="font-bold">0</span> 行</div>
+              <div>再生待ち: <span id="queuedCount" class="font-bold">0</span> 行</div>
+            </div>
+          </div>
+
           <div class="pt-4 border-t">
             <p class="text-sm text-gray-600 mb-2">再生時間情報</p>
             <div class="bg-gray-50 p-2 rounded text-xs text-gray-700 font-mono space-y-1">
@@ -217,6 +243,10 @@
     let activePlayingSources = new Map(); // { myCnt: { startTime, text, sourceNode } }
     let concurrentPlayDetected = false;
     let playbackQueue = []; // 再生待ちのキュー
+    
+    // ========== 並行リクエスト管理 ==========
+    let MAX_CONCURRENT_REQUESTS = 3; // 同時にリクエストする音声の数（UIから変更可能）
+    let activeRequests = new Set(); // 現在リクエスト中の行番号
 
     /**
      * 前の音声が完全に終了するまで待機する関数
@@ -326,6 +356,15 @@
         div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}${isConcurrent ? ' ⚠️' : ''}`;
         container.appendChild(div);
       }
+      
+      // バッファ状況を更新
+      updateBufferStatus();
+    }
+    
+    // ========== バッファ状況更新 ==========
+    function updateBufferStatus() {
+      document.getElementById("requestingCount").textContent = activeRequests.size;
+      document.getElementById("queuedCount").textContent = pendingBytesQueue.length;
     }
 
     // ========== 多重再生検知と表示 ==========
@@ -377,6 +416,7 @@
       if (curPlaying < 0 || !playStarts[curPlaying]) {
         document.getElementById("elapsedTime").textContent = "0.0";
         document.getElementById("remainingTime").textContent = "0.0";
+        updateBufferStatus(); // バッファ状況を更新
         return;
       }
 
@@ -387,8 +427,9 @@
         document.getElementById("remainingTime").textContent = Math.max(0, remaining).toFixed(1);
       }
       
-      // 多重再生表示も更新
+      // 多重再生表示とバッファ状況を更新
       updateConcurrentPlayingDisplay();
+      updateBufferStatus();
     }
 
     // タイマーループ（100ms ごと）
@@ -607,42 +648,44 @@
     let cnt = 0;
 
     const f = (text) => {
-      return new Promise((resolve) =>
-        setTimeout(() => {
-          playTexts.push(text);
+      return new Promise((resolve) => {
+        playTexts.push(text);
 
-          const myCnt = cnt++;
+        const myCnt = cnt++;
 
-          status[myCnt] = STATUS_START;
-          updateStatusDisplay();
+        status[myCnt] = STATUS_START;
+        updateStatusDisplay();
 
-          addLog(`APIリクエスト送信: 行${myCnt} "${text.substring(0, 30)}..."`);
+        addLog(`APIリクエスト送信: 行${myCnt} "${text.substring(0, 30)}..."`);
+        
+        // リクエスト管理に追加
+        activeRequests.add(myCnt);
 
-          fetch("http://10.2.1.15:19999/run2", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: model,
-              input: text,
-              voice: voice,
-              speed: 1,
-              response_format: responseFormat
-            })
-          }).then((response) => {
-            if (!response.ok) {
-              throw new Error(`OpenAI API error: ${response.status}`);
-            }
-            addLog(`APIレスポンス受信: 行${myCnt}`);
-            console.log("request text: ", text);
-            return response.body.getReader();
-          }).then((reader) => {
-            // 前の行が処理されるまで待つ
-            while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) { }
-            resolve();
+        fetch("http://10.2.1.15:19999/run2", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: model,
+            input: text,
+            voice: voice,
+            speed: 1,
+            response_format: responseFormat
+          })
+        }).then((response) => {
+          if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.status}`);
+          }
+          addLog(`APIレスポンス受信: 行${myCnt}`);
+          console.log("request text: ", text);
+          return response.body.getReader();
+        }).then((reader) => {
+          // 前の行のデータが PUSHED になるまで待つ（リクエストは並行実行）
+          while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) { }
+          resolve();
 
-            function readChunk({ done, value }) {
+          function readChunk({ done, value }) {
               if (isStop) {
                 return;
               }
@@ -725,9 +768,12 @@
           }).catch((error) => {
             addLog(`エラー: 行${myCnt} - ${error.message}`);
             console.error("エラー:", error);
+          }).finally(() => {
+            // リクエスト完了したら管理から削除
+            activeRequests.delete(myCnt);
           });
 
-        }, Math.random() * 500))
+        })
     };
 
 
@@ -742,6 +788,11 @@
         return;
       }
 
+      // UI から並行リクエスト数を取得
+      const concurrentInput = document.getElementById("concurrentRequests");
+      MAX_CONCURRENT_REQUESTS = parseInt(concurrentInput.value) || 3;
+      MAX_CONCURRENT_REQUESTS = Math.max(1, Math.min(10, MAX_CONCURRENT_REQUESTS)); // 1-10 の範囲に制限
+
       // 初期化
       cnt = 0;
       status = [];
@@ -754,6 +805,7 @@
       actualDurations = {};
       activePlayingSources.clear(); // 多重再生管理をクリア
       playbackQueue = []; // 再生待ちキューをクリア
+      activeRequests.clear(); // リクエスト管理をクリア
       concurrentPlayDetected = false;
       updateConcurrentPlayingDisplay();
       
@@ -761,14 +813,37 @@
       document.getElementById("waitingNotice").classList.add("hidden");
 
       addLog(`再生開始: ${texts.length}行のテキストを処理します`);
+      addLog(`並行リクエスト数: ${MAX_CONCURRENT_REQUESTS} 行`);
       document.getElementById("currentText").innerText = texts[0].trim();
       updateStatusDisplay();
 
       try {
-        await texts.reduce(
-          (p, v) => p.then(() => f(v.trim())),
-          Promise.resolve()
-        );
+        // 並行リクエスト実装: MAX_CONCURRENT_REQUESTS 個ずつ並行処理
+        const promises = [];
+        let currentIndex = 0;
+        
+        while (currentIndex < texts.length) {
+          // 現在のバッチを取得（最大 MAX_CONCURRENT_REQUESTS 個）
+          const batchSize = Math.min(MAX_CONCURRENT_REQUESTS, texts.length - currentIndex);
+          const batch = [];
+          
+          for (let i = 0; i < batchSize; i++) {
+            const text = texts[currentIndex + i].trim();
+            batch.push(f(text));
+          }
+          
+          addLog(`バッチ処理: 行${currentIndex}～${currentIndex + batchSize - 1} (${batchSize}行)`);
+          
+          // このバッチの全リクエストが完了するまで待機
+          await Promise.all(batch);
+          
+          currentIndex += batchSize;
+          
+          // 次のバッチに進む前に少し待機（サーバー負荷軽減）
+          if (currentIndex < texts.length) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        }
         
         addLog("すべてのテキストの処理が完了しました");
       

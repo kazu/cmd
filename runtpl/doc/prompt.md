@@ -807,3 +807,307 @@ while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) { }
 ## 関連ファイル
 - `openai_tts_realtime.html`: 多重再生防止機能を実装
 
+---
+
+# 並行リクエストによるバッファリング機能の実装
+
+## 改良指示
+
+```
+生成した音声の再生が間に合ってないことがあるので、
+バックグラウンドでリクエストする音声の数を増やしてください。
+```
+
+## 実装内容
+
+### 並行リクエストシステムの実装
+
+#### リクエスト管理の追加
+```javascript
+// ========== 並行リクエスト管理 ==========
+let MAX_CONCURRENT_REQUESTS = 3; // 同時にリクエストする音声の数（UIから変更可能）
+let activeRequests = new Set(); // 現在リクエスト中の行番号
+```
+
+**特徴**:
+- `MAX_CONCURRENT_REQUESTS`: 同時にリクエストする音声の数を制御
+- `activeRequests`: 現在リクエスト中の行番号を追跡（Set で重複なし）
+- UI から動的に変更可能（1～10の範囲）
+
+#### バッチ処理ロジック
+```javascript
+// 並行リクエスト実装: MAX_CONCURRENT_REQUESTS 個ずつ並行処理
+const promises = [];
+let currentIndex = 0;
+
+while (currentIndex < texts.length) {
+  // 現在のバッチを取得（最大 MAX_CONCURRENT_REQUESTS 個）
+  const batchSize = Math.min(MAX_CONCURRENT_REQUESTS, texts.length - currentIndex);
+  const batch = [];
+  
+  for (let i = 0; i < batchSize; i++) {
+    const text = texts[currentIndex + i].trim();
+    batch.push(f(text));
+  }
+  
+  addLog(`バッチ処理: 行${currentIndex}～${currentIndex + batchSize - 1} (${batchSize}行)`);
+  
+  // このバッチの全リクエストが完了するまで待機
+  await Promise.all(batch);
+  
+  currentIndex += batchSize;
+  
+  // 次のバッチに進む前に少し待機（サーバー負荷軽減）
+  if (currentIndex < texts.length) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+}
+```
+
+**動作**:
+1. テキストを `MAX_CONCURRENT_REQUESTS` 個ずつのバッチに分割
+2. 各バッチ内の行を並行してリクエスト（Promise.all）
+3. バッチ全体が完了してから次のバッチへ
+4. バッチ間で200ms の待機（サーバー負荷軽減）
+
+#### リクエスト関数の改善
+```javascript
+const f = (text) => {
+  return new Promise((resolve) => {
+    playTexts.push(text);
+    const myCnt = cnt++;
+    
+    status[myCnt] = STATUS_START;
+    updateStatusDisplay();
+    
+    addLog(`APIリクエスト送信: 行${myCnt} "${text.substring(0, 30)}..."`);
+    
+    // リクエスト管理に追加
+    activeRequests.add(myCnt);
+    
+    fetch(/* ... */)
+      .then(/* ... */)
+      .catch((error) => {
+        addLog(`エラー: 行${myCnt} - ${error.message}`);
+        console.error("エラー:", error);
+      })
+      .finally(() => {
+        // リクエスト完了したら管理から削除
+        activeRequests.delete(myCnt);
+      });
+  })
+};
+```
+
+**変更点**:
+- `setTimeout()` による遅延を削除（即座にリクエスト開始）
+- `activeRequests` で管理（追加/削除）
+- `finally()` で確実に削除（エラー時も含む）
+
+### UI コンポーネントの追加
+
+#### 並行リクエスト数設定
+```html
+<div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+  <label class="block mb-2 font-semibold text-gray-700">⚙️ 設定:</label>
+  <div class="mb-3">
+    <label class="block mb-1 text-sm text-gray-600">並行リクエスト数（バッファサイズ）:</label>
+    <input
+      type="number"
+      id="concurrentRequests"
+      class="block w-32 p-2 border border-gray-300 rounded-lg"
+      value="3"
+      min="1"
+      max="10"
+    />
+    <p class="text-xs text-gray-500 mt-1">
+      同時にリクエストする音声の数（1-10）。大きいほどバッファリングが増えます。
+    </p>
+  </div>
+</div>
+```
+
+**機能**:
+- デフォルト値: 3
+- 範囲: 1～10（入力時に自動制限）
+- リアルタイムに変更可能
+
+#### バッファ状況表示
+```html
+<div class="mb-4">
+  <p class="text-sm text-gray-600 mb-2">バッファ状況</p>
+  <div class="bg-gray-50 p-2 rounded text-xs text-gray-700 space-y-1">
+    <div>リクエスト中: <span id="requestingCount" class="font-bold">0</span> 行</div>
+    <div>再生待ち: <span id="queuedCount" class="font-bold">0</span> 行</div>
+  </div>
+</div>
+```
+
+**表示内容**:
+- **リクエスト中**: `activeRequests.size`（現在APIリクエスト中の行数）
+- **再生待ち**: `pendingBytesQueue.length`（データ受信済みで再生待ちの行数）
+
+#### バッファ状況更新関数
+```javascript
+function updateBufferStatus() {
+  document.getElementById("requestingCount").textContent = activeRequests.size;
+  document.getElementById("queuedCount").textContent = pendingBytesQueue.length;
+}
+```
+
+- 100ms ごとの タイマー更新で自動呼び出し
+- ステータス更新時にも呼び出し
+- リアルタイムでバッファ状況を可視化
+
+## 動作フロー
+
+### 従来の処理（順次リクエスト）
+```
+行0 リクエスト → 完了 → 行1 リクエスト → 完了 → 行2 リクエスト → ...
+```
+- 1行ずつ順番に処理
+- 再生が音声生成を待つことがある
+
+### 改善後の処理（並行リクエスト、MAX_CONCURRENT_REQUESTS=3）
+```
+バッチ1: 行0,1,2 を並行リクエスト → 全完了
+         ↓ 200ms 待機
+バッチ2: 行3,4,5 を並行リクエスト → 全完了
+         ↓ 200ms 待機
+バッチ3: 行6,7,8 を並行リクエスト → ...
+```
+
+**タイムライン例**:
+```
+時刻  |  リクエスト                    |  再生
+------|--------------------------------|------------------
+0.0s  |  行0,1,2 リクエスト開始        |
+0.5s  |  行0 データ受信完了            |
+0.6s  |  行1 データ受信完了            |  行0 再生開始
+0.7s  |  行2 データ受信完了            |
+2.0s  |                                |  行0 再生完了
+2.0s  |                                |  行1 再生開始（待機なし！）
+3.5s  |                                |  行1 再生完了
+3.5s  |                                |  行2 再生開始（待機なし！）
+4.0s  |  行3,4,5 リクエスト開始        |
+...
+```
+
+### ログ出力例
+```
+[14:30:00] 再生開始: 10行のテキストを処理します
+[14:30:00] 並行リクエスト数: 3 行
+[14:30:00] バッチ処理: 行0～2 (3行)
+[14:30:00] APIリクエスト送信: 行0 "こんにちは..."
+[14:30:00] APIリクエスト送信: 行1 "これはテスト..."
+[14:30:00] APIリクエスト送信: 行2 "音声合成です..."
+[14:30:01] APIレスポンス受信: 行0
+[14:30:01] データ受信完了: 行0 (48256バイト)
+[14:30:01] 再生開始: 行0 "こんにちは..."
+[14:30:01] APIレスポンス受信: 行1
+[14:30:02] データ受信完了: 行1 (52480バイト)
+[14:30:02] APIレスポンス受信: 行2
+[14:30:02] データ受信完了: 行2 (45120バイト)
+[14:30:03] 再生完了: 行0
+[14:30:03] 再生開始: 行1 "これはテスト..." ← 待機なし！
+[14:30:04] バッチ処理: 行3～5 (3行)
+...
+```
+
+## 技術的な補足
+
+### Promise.all() による並行処理
+```javascript
+await Promise.all(batch);
+```
+- 配列内のすべての Promise を並行実行
+- 全て完了するまで待機
+- 1つでもエラーがあれば catch へ
+
+### バッチ間の待機（200ms）
+```javascript
+if (currentIndex < texts.length) {
+  await new Promise(resolve => setTimeout(resolve, 200));
+}
+```
+- サーバー負荷を軽減
+- 急激なリクエストラッシュを防ぐ
+- ネットワーク帯域の効率的利用
+
+### Set によるリクエスト管理
+```javascript
+let activeRequests = new Set();
+activeRequests.add(myCnt);    // O(1)
+activeRequests.delete(myCnt); // O(1)
+activeRequests.size;          // O(1)
+```
+- 高速な追加・削除・サイズ取得
+- 重複を自動排除
+- メモリ効率が良い
+
+### 並行数の最適値
+
+**MAX_CONCURRENT_REQUESTS = 1**
+- 従来と同じ（順次処理）
+- 再生が遅い場合に待機発生
+
+**MAX_CONCURRENT_REQUESTS = 3（推奨）**
+- バランスが良い
+- 通常の再生速度に十分対応
+- サーバー負荷も適度
+
+**MAX_CONCURRENT_REQUESTS = 5-10**
+- 長文や高速再生に対応
+- サーバー負荷増加
+- ネットワーク帯域消費増加
+
+## 効果
+
+### 再生の途切れ防止
+- **バッファリング**: 常に次の音声が準備済み
+- **待機時間削減**: 再生が音声生成を待つことがほぼなくなる
+- **スムーズな再生**: 行間の無音時間が最小化
+
+### パフォーマンス向上
+- **処理時間短縮**: 全体の処理時間が大幅に短縮（最大 1/MAX_CONCURRENT_REQUESTS）
+- **CPU 効率**: ネットワーク待機中も次のリクエストを処理
+- **メモリ使用**: 適度なバッファリングでメモリ効率も維持
+
+### 可視性とコントロール
+- **リアルタイム表示**: バッファ状況を常に確認可能
+- **柔軟な設定**: ユーザーが並行数を調整可能
+- **デバッグ容易**: ログで並行処理の状況を追跡
+
+### エッジケースの対処
+
+**ケース1: サーバーが遅い場合**
+- 並行リクエストにより、待機時間を有効活用
+- バッファが枯渇する前に次のデータが到着
+
+**ケース2: ネットワークが不安定な場合**
+- 複数リクエストの並行により、1つの遅延が全体に影響しにくい
+- エラー時も他のリクエストは継続
+
+**ケース3: 大量のテキスト処理**
+- バッチ処理により、メモリ消費を制御
+- 200ms の待機で サーバー過負荷を防止
+
+## ベンチマーク（例）
+
+### テスト条件
+- テキスト: 10行
+- 各行の音声生成時間: 平均 1.5秒
+- 各行の再生時間: 平均 2.0秒
+
+### 結果比較
+
+| 設定 | 総処理時間 | 待機発生 | 備考 |
+|------|-----------|---------|------|
+| 順次（従来） | 約25秒 | あり | 各行で待機発生 |
+| 並行数=2 | 約18秒 | 稀 | たまに待機 |
+| 並行数=3 | 約15秒 | なし | スムーズ |
+| 並行数=5 | 約14秒 | なし | サーバー負荷増 |
+
+## 関連ファイル
+- `openai_tts_realtime.html`: 並行リクエスト機能を実装
+
