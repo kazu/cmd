@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  runtpl:
+    build:
+      context: .
+    ports:
+      - "19999:19999"
+    volumes:
+      - ./tmpl:/app/tmpl
+    environment:
+      - LOG_LEVEL=info
+    container_name: runtpl-server
+    restart: unless-stopped
+    networks:
+      - runtpl-network
+
+networks:
+  runtpl-network:
+    driver: bridge

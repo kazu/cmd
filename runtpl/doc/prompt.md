@@ -142,3 +142,203 @@ while (myCnt > 0 && status[myCnt - 1] < STATUS_END) {
 - Firefox: 全機能対応
 - Safari: webkit プレフィックス対応
 
+---
+
+# Docker 化（Dockerfile と docker-compose.yml の実装）
+
+## 改良指示（TODO.md より）
+
+```
+- [ ] Docker 化. 簡単に動作かくにん出来るようにDockerfile の作成と docker compose の対応
+```
+
+## 実装内容
+
+### Dockerfile の構成
+
+#### マルチステージビルド
+
+**ビルドステージ**
+```dockerfile
+FROM golang:1.24.4-alpine AS builder
+```
+- 公式の Go イメージを使用（バージョン 1.24.4）
+- Alpine Linux をベースにすることでイメージサイズを最小化
+- ビルド用ツールチェーンが含まれている
+
+**依存関係管理**
+```dockerfile
+COPY ../go.mod ../go.sum ./
+RUN go mod download
+```
+- キャッシュレイヤーを活用するため、モジュール定義を先にコピー
+- Docker ビルドキャッシュを効率的に利用
+
+**ビルドプロセス**
+```dockerfile
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o runtpl .
+```
+- ソースコードをコピー
+- CGO_ENABLED=0 で静的リンク（Alpine での動作を確保）
+- GOOS=linux で Linux 用にクロスコンパイル
+
+**実行ステージ**
+```dockerfile
+FROM alpine:latest
+RUN mkdir -p tmpl
+COPY --from=builder /build/runtpl .
+COPY openai_tts_realtime.html tmpl/
+```
+- 最小限の Alpine Linux イメージ（約7MB）
+- ビルドステージのバイナリのみをコピー
+- HTML ファイルをテンプレートディレクトリにコピー
+- テンプレートディレクトリを事前作成
+
+**ポート公開と実行**
+```dockerfile
+EXPOSE 19999
+CMD ["./runtpl"]
+```
+- ポート 19999 をコンテナ外に公開
+- アプリケーション起動コマンド
+
+#### マルチステージビルドの利点
+- **イメージサイズ削減**: ビルドツール（Go SDK 等）を最終イメージに含めない
+  - 最終イメージサイズ: 約20-30MB（通常の Go バイナリ + Alpine）
+- **セキュリティ向上**: 不要なツールチェーンを排除
+- **ビルド時間の最適化**: レイヤーキャッシュの活用による高速ビルド
+
+### docker-compose.yml の構成
+
+**サービス定義**
+```yaml
+services:
+  runtpl:
+    build:
+      context: .
+    ports:
+      - "19999:19999"
+```
+- コンテナ内ポート 19999 をホストの 19999 にマッピング
+- `docker-compose up` で自動ビルド・実行可能
+
+**ボリュームマウント**
+```yaml
+    volumes:
+      - ./tmpl:/app/tmpl
+```
+- ホストの `./tmpl` ディレクトリをコンテナの `/app/tmpl` にマウント
+- テンプレートファイルの変更がホット反映される（再ビルド不要）
+- Docker 内で作成されたテンプレートファイルがホストに保存される
+
+**環境変数とコンテナ設定**
+```yaml
+    environment:
+      - LOG_LEVEL=info
+    container_name: runtpl-server
+    restart: unless-stopped
+```
+- 環境変数で設定を一元管理
+- コンテナ名を明確化
+- クラッシュ時の自動再起動を設定
+
+**ネットワーク定義**
+```yaml
+networks:
+  runtpl-network:
+    driver: bridge
+```
+- ブリッジネットワークで複数コンテナ間通信を可能にする設定
+- 将来の複数サービス連携に対応
+
+## 使用方法
+
+### ビルドと実行
+```bash
+# ディレクトリに移動
+cd /workspaces/cmd/runtpl
+
+# イメージのビルドとコンテナ起動（バックグラウンド）
+docker-compose up -d
+
+# ステータス確認
+docker-compose ps
+
+# ログ確認
+docker-compose logs -f
+```
+
+### 動作確認
+```bash
+# ブラウザで http://localhost:19999/test にアクセス
+# または curl を使用
+curl http://localhost:19999/test
+```
+
+### 停止と削除
+```bash
+# コンテナを停止
+docker-compose stop
+
+# コンテナと関連リソースを削除
+docker-compose down
+
+# イメージも削除する場合
+docker-compose down --rmi all
+```
+
+### トラブルシューティング
+
+**ポートが既に使用されている場合**
+```yaml
+# docker-compose.yml を編集して別のポートに変更
+ports:
+  - "19998:19999"  # ホストの 19998 ポートを使用
+```
+
+**テンプレートファイルが反映されない場合**
+```bash
+# コンテナを再構築
+docker-compose up -d --build
+```
+
+**詳細なログを確認**
+```bash
+docker-compose logs -f runtpl
+```
+
+**イメージサイズの確認**
+```bash
+docker images runtpl_runtpl
+```
+
+## 技術的な補足
+
+### Alpine Linux の選択理由
+- **最小サイズ**: 基本イメージが約7MB（Ubuntu 等の1/10）
+- **セキュリティ**: 最小限のコンポーネントのみ（攻撃対象面を最小化）
+- **Go との相性**: Go は静的リンクに対応し、Alpine で完全に動作
+
+### Docker Compose の利点
+- **開発の簡略化**: `docker-compose up` で一括起動
+- **環境再現性**: ポート、ボリューム、環境変数を統一管理
+- **スケーラビリティ**: 複数サービス追加時に対応容易
+- **本番環境への親和性**: Kubernetes への移行が容易
+
+### キャッシュレイヤーの最適化
+```dockerfile
+COPY ../go.mod ../go.sum ./
+RUN go mod download
+COPY . .
+```
+- モジュール定義を先にコピーすることで、ソース変更時のリビルド速度を向上
+- 依存関係が変更されない限り、キャッシュを活用可能
+
+## 関連ファイル
+- `Dockerfile`: コンテナイメージビルド定義
+- `docker-compose.yml`: 複数コンテナの管理と実行設定
+- `runtpl.go`: メインアプリケーション（ポート19999で動作）
+- `openai_tts_realtime.html`: フロントエンド HTML ファイル
+- `go.mod`, `go.sum`: Go 依存管理ファイル
+
