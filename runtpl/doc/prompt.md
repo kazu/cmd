@@ -342,3 +342,468 @@ COPY . .
 - `openai_tts_realtime.html`: フロントエンド HTML ファイル
 - `go.mod`, `go.sum`: Go 依存管理ファイル
 
+---
+
+# 多重再生検知機能の実装
+
+## 改良指示
+
+```
+UI は改善したがまだ、複数行が同時に再生してしまう問題があるので、
+再生状態のview で多重再生しているのを検知できて表示できるようにしてください。
+```
+
+## 実装内容
+
+### 多重再生検知システム
+
+#### activePlayingSources マップの追加
+```javascript
+let activePlayingSources = new Map(); // { myCnt: { startTime, text, sourceNode } }
+let concurrentPlayDetected = false;
+```
+- 現在再生中のすべての音声を追跡する Map を導入
+- キー: 行番号（myCnt）
+- 値: { startTime, text, sourceNode } オブジェクト
+
+#### 再生開始時の検知
+```javascript
+// 再生開始時に activePlayingSources に追加
+activePlayingSources.set(myCnt, {
+  startTime: performance.now(),
+  text: ctext,
+  sourceNode: sourceNode
+});
+
+// 多重再生をチェック
+if (activePlayingSources.size > 1) {
+  const activeIndices = Array.from(activePlayingSources.keys()).join(', ');
+  addLog(`⚠️ 警告: 多重再生検知！ 再生中の行: [${activeIndices}]`);
+}
+```
+- AudioBufferSourceNode の start() 実行時に Map に追加
+- サイズが 2 以上の場合、多重再生と判定してログ出力
+
+#### 再生終了時の処理
+```javascript
+sourceNode.onended = () => {
+  // 再生終了時に activePlayingSources から削除
+  activePlayingSources.delete(myCnt);
+  updateConcurrentPlayingDisplay();
+  // ...
+};
+```
+- 音声再生完了時に Map から削除
+- 表示を即座に更新
+
+### UI コンポーネントの追加
+
+#### 多重再生警告パネル
+```html
+<div id="concurrentWarning" class="hidden mb-4 p-3 bg-red-50 border-l-4 border-red-500 rounded">
+  <div class="flex items-center">
+    <span class="text-2xl mr-2">⚠️</span>
+    <div>
+      <p class="text-sm font-bold text-red-700">多重再生検知</p>
+      <p class="text-xs text-red-600" id="concurrentCount">複数の音声が同時再生されています</p>
+    </div>
+  </div>
+</div>
+```
+- 多重再生検知時に表示される警告パネル
+- アニメーション効果付き（pulse）
+- 赤色で視覚的に警告
+
+#### 再生中の行リスト
+```html
+<div class="mb-4">
+  <p class="text-sm text-gray-600 mb-2">再生中の行</p>
+  <div id="playingList" class="bg-gray-50 p-2 rounded text-xs space-y-1 max-h-32 overflow-y-auto">
+    <p class="text-gray-500">なし</p>
+  </div>
+</div>
+```
+- 現在再生中のすべての行をリスト表示
+- 各行の情報（行番号、テキスト、経過時間）を表示
+- 多重再生時は赤背景で強調表示
+
+### 表示更新関数
+
+#### updateConcurrentPlayingDisplay()
+```javascript
+function updateConcurrentPlayingDisplay() {
+  const playingList = document.getElementById("playingList");
+  const warningDiv = document.getElementById("concurrentWarning");
+  const countSpan = document.getElementById("concurrentCount");
+  
+  if (activePlayingSources.size === 0) {
+    playingList.innerHTML = '<p class="text-gray-500">なし</p>';
+    warningDiv.classList.add("hidden");
+    concurrentPlayDetected = false;
+  } else {
+    playingList.innerHTML = "";
+    const entries = Array.from(activePlayingSources.entries());
+    
+    entries.forEach(([idx, info]) => {
+      const elapsed = (performance.now() - info.startTime) / 1000;
+      const isConcurrent = activePlayingSources.size > 1;
+      
+      // 各行の表示を生成（多重再生時は赤背景）
+      div.className = `p-2 rounded ${isConcurrent ? 'bg-red-100 border border-red-300' : 'bg-blue-100'}`;
+      // ...
+    });
+    
+    // 多重再生警告
+    if (activePlayingSources.size > 1) {
+      warningDiv.classList.remove("hidden");
+      countSpan.textContent = `${activePlayingSources.size}個の音声が同時再生中`;
+      if (!concurrentPlayDetected) {
+        concurrentPlayDetected = true;
+        addLog(`⚠️ 多重再生検知: ${activePlayingSources.size}個の音声が同時再生されています`);
+      }
+    }
+  }
+}
+```
+- 100ms ごとにタイマーで自動更新
+- 再生中の行数に応じて表示を動的に変更
+- 多重再生時は警告パネルを表示
+
+#### 処理状況の視覚的強調
+```javascript
+function updateStatusDisplay() {
+  // ...
+  const isConcurrent = activePlayingSources.has(i) && activePlayingSources.size > 1;
+  const concurrentClass = isConcurrent ? "concurrent-item" : "";
+  
+  div.className = `text-xs truncate ${concurrentClass}`;
+  div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}${isConcurrent ? ' ⚠️' : ''}`;
+  // ...
+}
+```
+- 処理状況リストで多重再生中の行を赤背景で表示
+- 警告マーク（⚠️）を追加
+
+### CSS アニメーション
+
+```css
+.warning-badge {
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.concurrent-item {
+  background-color: #fee2e2;
+  border-left: 4px solid #dc2626;
+}
+```
+- 警告パネルに点滅アニメーション
+- 多重再生中の行を赤枠で強調
+
+### 停止処理の改善
+
+```javascript
+document.getElementById("stop").addEventListener("click", () => {
+  isStop = true;
+  
+  // すべての再生中の音声を停止
+  activePlayingSources.forEach((info, idx) => {
+    if (info.sourceNode) {
+      try {
+        info.sourceNode.stop();
+        info.sourceNode.disconnect();
+      } catch (e) {
+        console.error(`行${idx}の停止エラー:`, e);
+      }
+    }
+  });
+  
+  // 多重再生管理をクリア
+  activePlayingSources.clear();
+  updateConcurrentPlayingDisplay();
+  // ...
+});
+```
+- 停止ボタン押下時、すべての再生中音声を確実に停止
+- Map をクリアして表示を更新
+
+## 機能の効果
+
+### 問題の可視化
+- **リアルタイム検知**: 多重再生が発生した瞬間に検知・表示
+- **詳細な情報**: どの行が同時再生されているか一目で確認可能
+- **経過時間表示**: 各行の再生開始からの経過時間を表示
+
+### デバッグの容易化
+- **ログ記録**: 多重再生発生時に自動的にログ出力
+- **視覚的警告**: 赤色の警告パネルとアニメーション
+- **処理状況の追跡**: ステータスバッジで各行の状態を表示
+
+### ユーザー体験の向上
+- **問題の認識**: 多重再生が発生していることをユーザーに明示
+- **原因の特定**: どの行で問題が発生しているか特定可能
+- **適切な対処**: 停止ボタンですべての音声を確実に停止
+
+## 技術的な補足
+
+### Map データ構造の選択理由
+- キーによる高速検索（O(1)）
+- 追加・削除の効率性
+- 反復処理の容易さ
+
+### パフォーマンスへの配慮
+- 100ms ごとの更新（過度な再描画を防ぐ）
+- 必要な情報のみを更新
+- メモリリークを防ぐための確実な削除処理
+
+### エラーハンドリング
+```javascript
+try {
+  info.sourceNode.stop();
+  info.sourceNode.disconnect();
+} catch (e) {
+  console.error(`行${idx}の停止エラー:`, e);
+}
+```
+- 既に停止済みの音声への stop() 呼び出しエラーを捕捉
+- 一部のエラーで全体が停止しないように try-catch で保護
+
+## 関連ファイル
+- `openai_tts_realtime.html`: 多重再生検知機能を実装
+
+---
+
+# 多重再生防止機能の実装（遅延再生）
+
+## 改良指示
+
+```
+多重再生を検知できるようになりました。多重再生をしないように
+後から再生される文を遅延して再生されるように修正してください。
+```
+
+## 実装内容
+
+### 待機メカニズムの実装
+
+#### waitForPreviousPlayback 関数の追加
+```javascript
+async function waitForPreviousPlayback(myCnt) {
+  const waitingNotice = document.getElementById("waitingNotice");
+  const waitingInfo = document.getElementById("waitingInfo");
+  
+  // 自分より前の行が再生中の場合、終了まで待機
+  while (activePlayingSources.size > 0) {
+    // 自分自身以外が再生中かチェック
+    const otherPlaying = Array.from(activePlayingSources.keys()).filter(idx => idx !== myCnt);
+    if (otherPlaying.length === 0) break;
+    
+    // 待機中の表示を更新
+    waitingNotice.classList.remove("hidden");
+    waitingInfo.textContent = `行${myCnt}が待機中 (再生中: [${otherPlaying.join(', ')}])`;
+    
+    addLog(`行${myCnt}: 他の音声が再生中のため待機...`);
+    
+    // 100ms 待機
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  // 待機終了
+  waitingNotice.classList.add("hidden");
+}
+```
+
+**機能**:
+- activePlayingSources が空になるまでループで待機
+- 100ms ごとにポーリングして再生可能かチェック
+- 待機中の状態を UI に表示
+- Promise ベースの非同期待機で他の処理をブロックしない
+
+#### schedulePlayback 関数の改善
+```javascript
+async function schedulePlayback(myCnt) {
+  // タイムアウトチェック...
+  
+  // 【多重再生防止】前の音声が完全に終了するまで待機
+  if (activePlayingSources.size > 0) {
+    const waitingFor = Array.from(activePlayingSources.keys());
+    addLog(`行${myCnt}: 待機開始 (再生中: [${waitingFor.join(', ')}])`);
+    await waitForPreviousPlayback(myCnt);
+    addLog(`行${myCnt}: 待機終了、再生を開始します`);
+  }
+  
+  // すでに再生中ならスキップ（念のため再チェック）
+  if (isPlaying) {
+    addLog(`行${myCnt}: 既に他の音声が再生中のためスキップ`);
+    return;
+  }
+  
+  // キューとテキストの存在チェック
+  if (pendingBytesQueue.length == 0) {
+    addLog(`行${myCnt}: キューが空のため再生できません`);
+    return;
+  }
+  
+  if (playTexts.length == 0) {
+    addLog(`行${myCnt}: テキストが空のため再生できません`);
+    return;
+  }
+  
+  // 再生処理...
+}
+```
+
+**改善点**:
+- 再生開始前に必ず `waitForPreviousPlayback()` を呼び出し
+- 待機終了後、念のため再度 `isPlaying` をチェック
+- キューとテキストの存在を明示的にチェックしてログ出力
+- 各ステップでログを出力して処理を追跡可能に
+
+### UI コンポーネントの追加
+
+#### 待機中通知パネル
+```html
+<div id="waitingNotice" class="hidden mb-4 p-3 bg-yellow-50 border-l-4 border-yellow-500 rounded">
+  <div class="flex items-center">
+    <span class="text-2xl mr-2">⏳</span>
+    <div>
+      <p class="text-sm font-bold text-yellow-700">待機中</p>
+      <p class="text-xs text-yellow-600" id="waitingInfo">前の音声の終了を待っています</p>
+    </div>
+  </div>
+</div>
+```
+
+**特徴**:
+- 黄色の警告パネルで待機状態を表示
+- 砂時計アイコン（⏳）で視覚的に表現
+- どの行が待機中か、どの行の終了を待っているかを表示
+- 待機終了時に自動的に非表示
+
+### 初期化処理の強化
+
+```javascript
+// 初期化
+cnt = 0;
+status = [];
+playTexts = [];
+pendingBytes = new Uint8Array(0);
+pendingBytesQueue = [];
+leftover = new Uint8Array(0);
+isPlaying = false;
+isStop = false;
+actualDurations = {};
+activePlayingSources.clear(); // 多重再生管理をクリア
+playbackQueue = []; // 再生待ちキューをクリア
+concurrentPlayDetected = false;
+updateConcurrentPlayingDisplay();
+
+// 待機中表示を非表示
+document.getElementById("waitingNotice").classList.add("hidden");
+```
+
+- `playbackQueue` を追加（将来の拡張用）
+- 待機中表示を明示的に非表示に設定
+- すべての状態を確実にリセット
+
+## 動作フロー
+
+### 通常の再生フロー
+1. **行N のデータ受信完了** → `schedulePlayback(N)` 呼び出し
+2. **待機チェック**: `activePlayingSources.size === 0` → 即座に再生開始
+3. **再生開始**: `activePlayingSources.set(N, ...)` で登録
+4. **再生終了**: `activePlayingSources.delete(N)` で削除
+
+### 多重再生が発生しそうな場合のフロー
+1. **行N が再生中**
+2. **行N+1 のデータ受信完了** → `schedulePlayback(N+1)` 呼び出し
+3. **待機チェック**: `activePlayingSources.size > 0` → 待機開始
+4. **待機中表示**: 黄色のパネルで「行N+1が待機中 (再生中: [N])」と表示
+5. **100ms ごとにポーリング**: `activePlayingSources` をチェック
+6. **行N の再生終了**: `activePlayingSources.delete(N)`
+7. **待機終了**: ループを抜けて待機パネルを非表示
+8. **再生開始**: 行N+1 の再生を開始
+
+### ログ出力例
+```
+[14:30:15] APIリクエスト送信: 行0 "こんにちは。これはテスト..."
+[14:30:16] データ受信完了: 行0 (48256バイト)
+[14:30:16] 再生開始: 行0 "こんにちは。これはテスト..."
+[14:30:17] APIリクエスト送信: 行1 "次の文章です..."
+[14:30:18] データ受信完了: 行1 (52480バイト)
+[14:30:18] 行1: 待機開始 (再生中: [0])
+[14:30:18] 行1: 他の音声が再生中のため待機... (再生中: [0])
+[14:30:19] 再生完了: 行0
+[14:30:19] 行1: 待機終了、再生を開始します
+[14:30:19] 再生開始: 行1 "次の文章です..."
+```
+
+## 技術的な補足
+
+### async/await による非同期待機
+```javascript
+await new Promise(resolve => setTimeout(resolve, 100));
+```
+- 100ms 待機しながら、他の JavaScript イベントをブロックしない
+- UI の応答性を維持
+- Promise チェーンで順序制御
+
+### ポーリング間隔の選択（100ms）
+- **短すぎる（< 50ms）**: CPU 負荷が高くなる
+- **長すぎる（> 500ms）**: 再生開始の遅延が目立つ
+- **100ms**: バランスが良く、ユーザーには遅延を感じさせない
+
+### 待機中のメモリ管理
+- ポーリングループ中も `activePlayingSources` は通常の削除で管理
+- Promise による待機なので、メモリリークは発生しない
+- `while` ループ内で状態が更新されるため、無限ループのリスクなし
+
+### エッジケースの対処
+
+**ケース1: 待機中に停止ボタンが押された場合**
+```javascript
+document.getElementById("stop").addEventListener("click", () => {
+  // ...
+  activePlayingSources.clear(); // これにより待機ループが終了
+});
+```
+- `activePlayingSources` がクリアされるため、待機ループが即座に終了
+- 次のチェックで `pendingBytesQueue` が空になり、再生はスキップ
+
+**ケース2: 同時に複数の行が待機する場合**
+- 各行が独立して `waitForPreviousPlayback()` を実行
+- 先に呼ばれた行が先に再生開始条件を満たす
+- FIFO（First In, First Out）の順序が自然に保たれる
+
+**ケース3: ネットワーク遅延で順序が入れ替わる場合**
+```javascript
+while (myCnt > 0 && status[myCnt - 1] < STATUS_PUSHED) { }
+```
+- データ受信側で前の行が処理されるまで待機
+- 再生側でも `waitForPreviousPlayback()` で待機
+- 二重の待機メカニズムで順序を保証
+
+## 効果
+
+### 多重再生の完全防止
+- **検知から防止へ**: 検知だけでなく、発生を未然に防ぐ
+- **確実な順次再生**: 必ず1つずつ順番に再生される
+- **ユーザー体験の向上**: 音声が重ならず、聞き取りやすい
+
+### 視覚的フィードバック
+- **待機状態の可視化**: 黄色のパネルで待機中であることを明示
+- **処理の透明性**: ログで詳細な処理フローを追跡可能
+- **安心感**: システムが正常に動作していることをユーザーが確認できる
+
+### 将来の拡張性
+- `playbackQueue` を導入済み（より高度なキュー管理に対応可能）
+- 待機ロジックが独立した関数として実装（カスタマイズ容易）
+- ログ出力で デバッグとモニタリングが容易
+
+## 関連ファイル
+- `openai_tts_realtime.html`: 多重再生防止機能を実装
+

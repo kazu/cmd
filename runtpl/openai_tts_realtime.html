@@ -23,6 +23,20 @@
       border-radius: 8px;
       overflow: hidden;
     }
+    
+    .warning-badge {
+      animation: pulse 1s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    
+    .concurrent-item {
+      background-color: #fee2e2;
+      border-left: 4px solid #dc2626;
+    }
   </style>
 </head>
 <body class="bg-gradient-to-br from-slate-900 to-slate-800">
@@ -51,7 +65,7 @@
 
         <!-- テキスト入力欄 -->
         <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
-          <label class="block mb-2 font-semibold text-gray-700">📝 合成したいテキスト:</label>
+          <label class="block mb-2 font-semibold text-gray-700">📝 再生したいテキスト:</label>
           <p class="text-sm text-gray-500 mb-3">「。」で区切られた文ごとに順番に再生されます</p>
           <textarea
             id="textInput"
@@ -94,6 +108,28 @@
             <p class="text-3xl font-bold text-blue-600" id="curIdx">0</p>
           </div>
 
+          <!-- 多重再生警告 -->
+          <div id="concurrentWarning" class="hidden mb-4 p-3 bg-red-50 border-l-4 border-red-500 rounded">
+            <div class="flex items-center">
+              <span class="text-2xl mr-2">⚠️</span>
+              <div>
+                <p class="text-sm font-bold text-red-700">多重再生検知</p>
+                <p class="text-xs text-red-600" id="concurrentCount">複数の音声が同時再生されています</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 待機中の表示 -->
+          <div id="waitingNotice" class="hidden mb-4 p-3 bg-yellow-50 border-l-4 border-yellow-500 rounded">
+            <div class="flex items-center">
+              <span class="text-2xl mr-2">⏳</span>
+              <div>
+                <p class="text-sm font-bold text-yellow-700">待機中</p>
+                <p class="text-xs text-yellow-600" id="waitingInfo">前の音声の終了を待っています</p>
+              </div>
+            </div>
+          </div>
+
           <div class="mb-4">
             <p class="text-sm text-gray-600 mb-2">前の文</p>
             <div class="bg-gray-50 p-3 rounded text-sm text-gray-700 min-h-12" id="prevText">-</div>
@@ -107,6 +143,14 @@
           <div class="mb-4">
             <p class="text-sm text-gray-600 mb-2">処理状況</p>
             <div id="statusContainer" class="space-y-2 max-h-40 overflow-y-auto"></div>
+          </div>
+
+          <!-- 現在再生中の行リスト -->
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">再生中の行</p>
+            <div id="playingList" class="bg-gray-50 p-2 rounded text-xs space-y-1 max-h-32 overflow-y-auto">
+              <p class="text-gray-500">なし</p>
+            </div>
           </div>
 
           <div class="pt-4 border-t">
@@ -168,6 +212,38 @@
     let isPlaying = false;
     let sourceNode = null;
     let idxForceStop = -1;
+
+    // ========== 多重再生検知 ==========
+    let activePlayingSources = new Map(); // { myCnt: { startTime, text, sourceNode } }
+    let concurrentPlayDetected = false;
+    let playbackQueue = []; // 再生待ちのキュー
+
+    /**
+     * 前の音声が完全に終了するまで待機する関数
+     */
+    async function waitForPreviousPlayback(myCnt) {
+      const waitingNotice = document.getElementById("waitingNotice");
+      const waitingInfo = document.getElementById("waitingInfo");
+      
+      // 自分より前の行が再生中の場合、終了まで待機
+      while (activePlayingSources.size > 0) {
+        // 自分自身以外が再生中かチェック
+        const otherPlaying = Array.from(activePlayingSources.keys()).filter(idx => idx !== myCnt);
+        if (otherPlaying.length === 0) break;
+        
+        // 待機中の表示を更新
+        waitingNotice.classList.remove("hidden");
+        waitingInfo.textContent = `行${myCnt}が待機中 (再生中: [${otherPlaying.join(', ')}])`;
+        
+        addLog(`行${myCnt}: 他の音声が再生中のため待機... (再生中: [${otherPlaying.join(', ')}])`);
+        
+        // 100ms 待機
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      // 待機終了
+      waitingNotice.classList.add("hidden");
+    }
 
     // ========== AnalyserNode（波形可視化用） ==========
     const analyserNode = audioContext.createAnalyser();
@@ -241,10 +317,59 @@
         const statusText = ["待機中", "準備中", "完了"][status[i]] || "不明";
         const statusClass = ["status-start", "status-pushed", "status-end"][status[i]] || "status-start";
         
+        // 多重再生チェック：この行が現在再生中かつ他にも再生中の行がある場合
+        const isConcurrent = activePlayingSources.has(i) && activePlayingSources.size > 1;
+        const concurrentClass = isConcurrent ? "concurrent-item" : "";
+        
         const div = document.createElement("div");
-        div.className = `text-xs truncate`;
-        div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}`;
+        div.className = `text-xs truncate ${concurrentClass}`;
+        div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> 行${i}${isConcurrent ? ' ⚠️' : ''}`;
         container.appendChild(div);
+      }
+    }
+
+    // ========== 多重再生検知と表示 ==========
+    function updateConcurrentPlayingDisplay() {
+      const playingList = document.getElementById("playingList");
+      const warningDiv = document.getElementById("concurrentWarning");
+      const countSpan = document.getElementById("concurrentCount");
+      
+      if (activePlayingSources.size === 0) {
+        playingList.innerHTML = '<p class="text-gray-500">なし</p>';
+        warningDiv.classList.add("hidden");
+        concurrentPlayDetected = false;
+      } else {
+        playingList.innerHTML = "";
+        const entries = Array.from(activePlayingSources.entries());
+        
+        entries.forEach(([idx, info]) => {
+          const div = document.createElement("div");
+          const elapsed = (performance.now() - info.startTime) / 1000;
+          const isConcurrent = activePlayingSources.size > 1;
+          
+          div.className = `p-2 rounded ${isConcurrent ? 'bg-red-100 border border-red-300' : 'bg-blue-100'}`;
+          div.innerHTML = `
+            <div class="font-bold ${isConcurrent ? 'text-red-700' : 'text-blue-700'}">
+              ${isConcurrent ? '⚠️ ' : '▶️ '}行${idx}
+            </div>
+            <div class="text-xs text-gray-600 truncate">${info.text.substring(0, 30)}...</div>
+            <div class="text-xs text-gray-500">経過: ${elapsed.toFixed(1)}秒</div>
+          `;
+          playingList.appendChild(div);
+        });
+        
+        // 多重再生警告
+        if (activePlayingSources.size > 1) {
+          warningDiv.classList.remove("hidden");
+          countSpan.textContent = `${activePlayingSources.size}個の音声が同時再生中`;
+          if (!concurrentPlayDetected) {
+            concurrentPlayDetected = true;
+            addLog(`⚠️ 多重再生検知: ${activePlayingSources.size}個の音声が同時再生されています`);
+          }
+        } else {
+          warningDiv.classList.add("hidden");
+          concurrentPlayDetected = false;
+        }
       }
     }
 
@@ -261,9 +386,12 @@
         document.getElementById("elapsedTime").textContent = elapsed.toFixed(1);
         document.getElementById("remainingTime").textContent = Math.max(0, remaining).toFixed(1);
       }
+      
+      // 多重再生表示も更新
+      updateConcurrentPlayingDisplay();
     }
 
-    // タイマーループ
+    // タイマーループ（100ms ごと）
     setInterval(updateTimerDisplay, 100);
 
     function EndStatuses(cur) {
@@ -310,10 +438,29 @@
         return;
       }
 
-      // すでに再生中ならスキップ
-      if (isPlaying) return;
+      // 【多重再生防止】前の音声が完全に終了するまで待機
+      if (activePlayingSources.size > 0) {
+        const waitingFor = Array.from(activePlayingSources.keys());
+        addLog(`行${myCnt}: 待機開始 (再生中: [${waitingFor.join(', ')}])`);
+        await waitForPreviousPlayback(myCnt);
+        addLog(`行${myCnt}: 待機終了、再生を開始します`);
+      }
 
-      if (pendingBytesQueue.length == 0) return;
+      // すでに再生中ならスキップ（念のため再チェック）
+      if (isPlaying) {
+        addLog(`行${myCnt}: 既に他の音声が再生中のためスキップ`);
+        return;
+      }
+
+      if (pendingBytesQueue.length == 0) {
+        addLog(`行${myCnt}: キューが空のため再生できません`);
+        return;
+      }
+
+      if (playTexts.length == 0) {
+        addLog(`行${myCnt}: テキストが空のため再生できません`);
+        return;
+      }
 
       curPlaying = myCnt;
       isPlaying = true;
@@ -353,6 +500,21 @@
       sourceNode = audioContext.createBufferSource();
       sourceNode.buffer = audioBuffer;
 
+      // 多重再生検知: 再生開始時に activePlayingSources に追加
+      activePlayingSources.set(myCnt, {
+        startTime: performance.now(),
+        text: ctext,
+        sourceNode: sourceNode
+      });
+      
+      // 多重再生をチェック
+      if (activePlayingSources.size > 1) {
+        const activeIndices = Array.from(activePlayingSources.keys()).join(', ');
+        addLog(`⚠️ 警告: 多重再生検知！ 再生中の行: [${activeIndices}]`);
+      }
+      
+      updateConcurrentPlayingDisplay();
+
       // AnalyserNode→destination へ接続
       sourceNode.connect(analyserNode);
       analyserNode.connect(audioContext.destination);
@@ -360,6 +522,10 @@
       // 再生終了時のイベント
       sourceNode.onended = () => {
         isPlaying = false;
+
+        // 多重再生検知: 再生終了時に activePlayingSources から削除
+        activePlayingSources.delete(myCnt);
+        updateConcurrentPlayingDisplay();
 
         if (idxForceStop > -1 && idxForceStop != curPlaying) {
           EndStatuses(curPlaying - 1);
@@ -400,14 +566,32 @@
     // 再生停止ボタンのクリックイベント    
     document.getElementById("stop").addEventListener("click", () => {
       isStop = true;
+      
+      // すべての再生中の音声を停止
+      activePlayingSources.forEach((info, idx) => {
+        if (info.sourceNode) {
+          try {
+            info.sourceNode.stop();
+            info.sourceNode.disconnect();
+          } catch (e) {
+            console.error(`行${idx}の停止エラー:`, e);
+          }
+        }
+      });
+      
       if (sourceNode) {
         sourceNode.stop(); // 再生を停止
         sourceNode.disconnect(); // ノードを切断
         isPlaying = false; // 再生中フラグをリセット
         pendingBytes = new Uint8Array(0); // キューをクリア
         leftover = new Uint8Array(0); // leftover をクリア
-        addLog("再生を停止しました");
       }
+      
+      // 多重再生管理をクリア
+      activePlayingSources.clear();
+      updateConcurrentPlayingDisplay();
+      
+      addLog("再生を停止しました");
     });
 
     // ログクリアボタン
@@ -568,6 +752,13 @@
       isPlaying = false;
       isStop = false;
       actualDurations = {};
+      activePlayingSources.clear(); // 多重再生管理をクリア
+      playbackQueue = []; // 再生待ちキューをクリア
+      concurrentPlayDetected = false;
+      updateConcurrentPlayingDisplay();
+      
+      // 待機中表示を非表示
+      document.getElementById("waitingNotice").classList.add("hidden");
 
       addLog(`再生開始: ${texts.length}行のテキストを処理します`);
       document.getElementById("currentText").innerText = texts[0].trim();
