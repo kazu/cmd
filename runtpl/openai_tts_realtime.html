@@ -394,7 +394,7 @@
       // 最新の5件までを表示
       const startIdx = Math.max(0, status.length - 5);
       for (let i = startIdx; i < status.length; i++) {
-        const statusText = ["待機中", "準備中", "完了"][status[i]] || "不明";
+        const statusText = ["準備中", "再生待ち", "完了"][status[i]] || "不明";
         const statusClass = ["status-start", "status-pushed", "status-end"][status[i]] || "status-start";
         
         // 多重再生チェック：この行が現在再生中かつ他にも再生中の行がある場合
