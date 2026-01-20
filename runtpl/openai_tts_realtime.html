@@ -99,6 +99,31 @@
             />
             <p class="text-xs text-gray-500 mt-1">この行番号から再生を開始します（0から開始）</p>
           </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">音声番号:</label>
+            <input
+              type="number"
+              id="voiceNumber"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="1"
+              min="0"
+              max="999"
+            />
+            <p class="text-xs text-gray-500 mt-1">OpenAI TTS に投げる音声番号（0～999）</p>
+          </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">再生速度:</label>
+            <input
+              type="number"
+              id="playbackSpeed"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="1.0"
+              min="0.1"
+              max="3.0"
+              step="0.1"
+            />
+            <p class="text-xs text-gray-500 mt-1">再生速度（0.1～3.0）</p>
+          </div>
         </div>
 
         <!-- テキスト入力欄 -->
@@ -150,7 +175,8 @@
           <div id="statusContent">
           <div class="mb-4">
             <p class="text-sm text-gray-600 mb-1">現在の行番号</p>
-            <p class="text-3xl font-bold text-blue-600" id="curIdx">0</p>
+            <p class="text-3xl font-bold text-blue-600 cursor-pointer hover:text-blue-800" id="curIdx" onclick="generateLineURLAndOpen()" title="クリックするとこの行から再生するURLを開きます">0</p>
+            <p class="text-xs text-gray-500 mt-1">クリックで指定行から再生するURLを開く</p>
           </div>
 
           <!-- 多重再生警告 -->
@@ -771,14 +797,14 @@
       }
     }
 
-    // テンプレートファイル選択時の処理
-    document.getElementById("templateFileSelect").addEventListener("change", async (e) => {
-      const selectedFile = e.target.value;
+    /**
+     * テンプレートファイルの内容を読み込む共通処理
+     */
+    async function loadTemplateFileContent(selectedFile) {
       if (!selectedFile) return;
 
       try {
         // GET リクエストでファイルの内容を取得
-        // サーバー側で [message] を置き換えてくれるはず
         const response = await fetch(`http://10.2.1.15:19999/test?message=${encodeURIComponent(selectedFile)}`);
         const html = await response.text();
         
@@ -790,23 +816,89 @@
         if (textarea) {
           document.getElementById("textInput").value = textarea.textContent;
           addLog(`テンプレート読み込み: ${selectedFile}`);
+          updateTextDisplay(); // テキスト表示を更新
         }
       } catch (error) {
         console.error("テンプレート読み込みエラー:", error);
         addLog(`エラー: テンプレート「${selectedFile}」を読み込めません`);
       }
+    }
+
+    // テンプレートファイル選択時の処理
+    document.getElementById("templateFileSelect").addEventListener("change", async (e) => {
+      const selectedFile = e.target.value;
+      if (!selectedFile) return;
+      
+      await loadTemplateFileContent(selectedFile);
     });
 
     // ページロード時にテンプレートファイル一覧を読み込む
-    window.addEventListener("load", () => {
+    window.addEventListener("load", async () => {
       updateTextDisplay();
-      loadTemplateFiles();
+      
+      // 【クエリパラメータから設定値を読み込む】
+      const urlParams = new URLSearchParams(window.location.search);
+      
+      // l パラメータ（開始行番号）を読み込む
+      const startLine = urlParams.get('l');
+      if (startLine !== null) {
+        document.getElementById("startLineNumber").value = startLine;
+        addLog(`📍 開始行番号を設定: ${startLine}`);
+      }
+      
+      // voiceNumberを読み込む
+      const voiceNum = urlParams.get('voiceNumber');
+      if (voiceNum !== null) {
+        document.getElementById("voiceNumber").value = voiceNum;
+        addLog(`🎤 音声番号を設定: ${voiceNum}`);
+      }
+      
+      // playbackSpeedを読み込む
+      const speed = urlParams.get('playbackSpeed');
+      if (speed !== null) {
+        document.getElementById("playbackSpeed").value = speed;
+        addLog(`⏱️ 再生速度を設定: ${speed}`);
+      }
+      
+      // テンプレートファイル一覧を読み込み（完了を待つ）
+      await loadTemplateFiles();
+      
+      // messageパラメータ（テンプレートファイル）を読み込む
+      // ※ファイル一覧ロード完了後に設定
+      const message = urlParams.get('message');
+      if (message !== null) {
+        document.getElementById("templateFileSelect").value = message;
+        addLog(`📄 テンプレートファイルを設定: ${message}`);
+        // ファイルを自動読み込み
+        await loadTemplateFileContent(message);
+      }
+      
+      // 【設定値の変更イベントをリッスン】
+      document.getElementById("voiceNumber").addEventListener("change", (e) => {
+        addLog(`🎤 音声番号を変更: ${e.target.value}`);
+      });
+      
+      document.getElementById("playbackSpeed").addEventListener("change", (e) => {
+        addLog(`⏱️ 再生速度を変更: ${e.target.value}`);
+      });
+      
+      document.getElementById("concurrentRequests").addEventListener("change", (e) => {
+        MAX_CONCURRENT_REQUESTS = parseInt(e.target.value) || 3;
+        addLog(`📊 並行リクエスト数を変更: ${e.target.value}`);
+      });
     });
 
-    // OpenAI TTS 設定（必要に応じて変更）
-    const model = "voicevox-v1";
-    const voice = "1";
-    const responseFormat = "pcm";
+    // OpenAI TTS 設定（UIの設定値から動的に取得）
+    let model = "voicevox-v1";
+    let responseFormat = "pcm";
+
+    function getVoiceNumber() {
+      return document.getElementById("voiceNumber").value || "1";
+    }
+
+    function getPlaybackSpeed() {
+      return parseFloat(document.getElementById("playbackSpeed").value) || 1.0;
+    }
 
     let cnt = 0;
 
@@ -832,8 +924,8 @@
           body: JSON.stringify({
             model: model,
             input: text,
-            voice: voice,
-            speed: 1,
+            voice: getVoiceNumber(),
+            speed: getPlaybackSpeed(),
             response_format: responseFormat
           })
         }).then((response) => {
@@ -1074,6 +1166,33 @@
         alert("エラーが発生しました。コンソールをご確認ください。");
       }
     });
+
+    /**
+     * 現在の行番号をクリックして、その行から再生するURLを生成して開く
+     */
+    function generateLineURLAndOpen() {
+      const curLineNum = parseInt(document.getElementById("curIdx").textContent) || 0;
+      const voiceNum = getVoiceNumber();
+      const speed = getPlaybackSpeed();
+      const selectedFile = document.getElementById("templateFileSelect").value;
+      
+      // /test エンドポイントへのURLを生成
+      let url = `http://10.2.1.15:19999/test?`;
+      
+      // 必須パラメータ
+      url += `l=${curLineNum}`;
+      
+      // messageパラメータ（テンプレートファイル）
+      if (selectedFile) {
+        url += `&message=${encodeURIComponent(selectedFile)}`;
+      }
+      
+      // 音声番号と再生速度
+      url += `&voiceNumber=${encodeURIComponent(voiceNum)}&playbackSpeed=${encodeURIComponent(speed)}`;
+      
+      addLog(`🔗 URLを開く: ${url}`);
+      window.open(url, '_blank');
+    }
   </script>
 </body>
 </html>
