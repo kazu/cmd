@@ -1,2 +1,7 @@
 tmp/
 runtpl/tmpl
+node_modules/
+runtpl/a.json
+runtpl/runtpl
+.vscode/settings.json
+img2pdf/img2pdf
