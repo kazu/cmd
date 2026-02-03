@@ -1,0 +1,2121 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>OpenAI TTS リアルタイム再生</title>
+  <!-- Tailwind CSS をCDNから読み込む -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status-start { background-color: #dbeafe; color: #1e40af; }
+    .status-pushed { background-color: #fef3c7; color: #92400e; }
+    .status-end { background-color: #dcfce7; color: #166534; }
+    
+    .waveform-container {
+      position: relative;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    
+    .warning-badge {
+      animation: pulse 1s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    
+    .concurrent-item {
+      background-color: #fee2e2;
+      border-left: 4px solid #dc2626;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 to-slate-800">
+  <div class="max-w-4xl mx-auto p-6">
+    <!-- ヘッダー -->
+    <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+      <h1 class="text-3xl font-bold text-gray-800 mb-2">🎙️ OpenAI TTS リアルタイム再生デモ</h1>
+      <p class="text-gray-600">テキストをリアルタイムで音声に変換して自動再生します</p>
+    </div>
+
+    <!-- メインコンテンツ -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- 左側：入力エリア -->
+      <div class="lg:col-span-2">
+        <!-- API Key 入力欄 -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <label class="block mb-2 font-semibold text-gray-700">🔑 OpenAI API Key:</label>
+          <input
+            type="password"
+            id="apiKeyInput"
+            class="block w-full p-3 border border-gray-300 rounded-lg mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="sk-xxxx..."
+          />
+          <p class="text-sm text-gray-500">APIキーはブラウザに保存されません</p>
+        </div>
+
+        <!-- 設定欄 -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <label class="block mb-2 font-semibold text-gray-700">⚙️ 設定:</label>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">再生テキストファイルを選択:</label>
+            <select
+              id="templateFileSelect"
+              class="block w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">-- ファイルを選択 --</option>
+            </select>
+            <p class="text-xs text-gray-500 mt-1">テンプレートディレクトリのファイルを選択して読み込みます</p>
+          </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">並行リクエスト数（バッファサイズ）:</label>
+            <input
+              type="number"
+              id="concurrentRequests"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="3"
+              min="1"
+              max="10"
+            />
+            <p class="text-xs text-gray-500 mt-1">同時にリクエストする音声の数（1-10）。大きいほどバッファリングが増えます。</p>
+          </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">開始行番号:</label>
+            <input
+              type="number"
+              id="startLineNumber"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="0"
+              min="0"
+            />
+            <p class="text-xs text-gray-500 mt-1">この行番号から再生を開始します（0から開始）</p>
+          </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">音声番号:</label>
+            <input
+              type="number"
+              id="voiceNumber"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="1"
+              min="0"
+              max="999"
+            />
+            <p class="text-xs text-gray-500 mt-1">OpenAI TTS に投げる音声番号（0～999）</p>
+          </div>
+          <div class="mb-3">
+            <label class="block mb-1 text-sm text-gray-600">再生速度:</label>
+            <input
+              type="number"
+              id="playbackSpeed"
+              class="block w-32 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value="1.0"
+              min="0.1"
+              max="3.0"
+              step="0.1"
+            />
+            <p class="text-xs text-gray-500 mt-1">再生速度（0.1～3.0）</p>
+          </div>
+        </div>
+
+        <!-- テキスト入力欄 -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <label class="block mb-2 font-semibold text-gray-700">📝 再生したいテキスト:</label>
+          <p class="text-sm text-gray-500 mb-3">「。」で区切られた文ごとに順番に再生されます</p>
+          <textarea
+            id="textInput"
+            class="block w-full p-3 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+            rows="8"
+            placeholder="こんにちは。これはリアルタイムの音声合成デモです。複数の文を入力してください。"
+          >[message]</textarea>
+          
+          <!-- テキスト表示欄（行ごと色付け用） -->
+          <div id="textDisplay" class="block w-full p-3 border border-gray-300 rounded-lg mb-3 bg-gray-50 min-h-32 max-h-64 overflow-y-auto font-mono text-sm leading-relaxed"></div>
+          
+          <!-- コントロールボタン -->
+          <div class="flex gap-3 flex-wrap">
+            <button
+              id="startButton"
+              class="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-md hover:shadow-lg"
+            >
+              ▶️ 再生開始
+            </button>
+            <button
+              id="pause"
+              class="bg-gradient-to-r from-yellow-500 to-yellow-600 hover:from-yellow-600 hover:to-yellow-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-md hover:shadow-lg"
+            >
+              ⏸️ 一時停止
+            </button>
+            <button
+              id="stop"
+              class="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-md hover:shadow-lg"
+            >
+              ⏹️ 再生停止
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右側：ステータスパネル -->
+      <div class="lg:col-span-1">
+        <div id="statusPanel" class="bg-white rounded-lg shadow-lg p-6 sticky top-6">
+          <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="togglePanel('statusContent', 'statusIcon')">
+            <h2 class="text-lg font-bold text-gray-800">📊 再生状態</h2>
+            <span id="statusIcon" class="text-gray-500 text-xl transition-transform">▼</span>
+          </div>
+          
+          <div id="statusContent">
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-1">現在の行番号</p>
+            <p class="text-3xl font-bold text-blue-600 cursor-pointer hover:text-blue-800" id="curIdx" onclick="generateLineURLAndOpen()" title="クリックするとこの行から再生するURLを開きます">0</p>
+            <p class="text-xs text-gray-500 mt-1">クリックで指定行から再生するURLを開く</p>
+          </div>
+
+          <!-- 多重再生警告 -->
+          <div id="concurrentWarning" class="hidden mb-4 p-3 bg-red-50 border-l-4 border-red-500 rounded">
+            <div class="flex items-center">
+              <span class="text-2xl mr-2">⚠️</span>
+              <div>
+                <p class="text-sm font-bold text-red-700">多重再生検知</p>
+                <p class="text-xs text-red-600" id="concurrentCount">複数の音声が同時再生されています</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 待機中の表示 -->
+          <div id="waitingNotice" class="hidden mb-4 p-3 bg-yellow-50 border-l-4 border-yellow-500 rounded">
+            <div class="flex items-center">
+              <span class="text-2xl mr-2">⏳</span>
+              <div>
+                <p class="text-sm font-bold text-yellow-700">待機中</p>
+                <p class="text-xs text-yellow-600" id="waitingInfo">前の音声の終了を待っています</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">前の文</p>
+            <div class="bg-gray-50 p-3 rounded text-sm text-gray-700 min-h-12" id="prevText">-</div>
+          </div>
+
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">現在の文</p>
+            <div class="bg-blue-50 p-3 rounded text-sm text-gray-700 font-semibold min-h-12 border-l-4 border-blue-500" id="currentText">-</div>
+          </div>
+
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">処理状況</p>
+            <div id="statusContainer" class="space-y-2 max-h-40 overflow-y-auto"></div>
+          </div>
+
+          <!-- 現在再生中の行リスト -->
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">再生中の行</p>
+            <div id="playingList" class="bg-gray-50 p-2 rounded text-xs space-y-1 max-h-32 overflow-y-auto">
+              <p class="text-gray-500">なし</p>
+            </div>
+          </div>
+
+          <!-- バッファ状況 -->
+          <div class="mb-4">
+            <p class="text-sm text-gray-600 mb-2">バッファ状況</p>
+            <div class="bg-gray-50 p-2 rounded text-xs text-gray-700 space-y-1">
+              <div>リクエスト中: <span id="requestingCount" class="font-bold">0</span> 行</div>
+              <div>再生待ち: <span id="queuedCount" class="font-bold">0</span> 行</div>
+            </div>
+          </div>
+
+          <div class="pt-4 border-t">
+            <p class="text-sm text-gray-600 mb-2">再生時間情報</p>
+            <div class="bg-gray-50 p-2 rounded text-xs text-gray-700 font-mono space-y-1">
+              <div>経過: <span id="elapsedTime">0.0</span>秒</div>
+              <div>残り: <span id="remainingTime">0.0</span>秒</div>
+            </div>
+          </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 波形表示 -->
+    <div id="wavePanel" class="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="togglePanel('waveContent', 'waveIcon')">
+        <h2 class="text-lg font-bold text-gray-800">🎵 波形表示</h2>
+        <span id="waveIcon" class="text-gray-500 text-xl transition-transform">▼</span>
+      </div>
+      <div id="waveContent">
+      <div class="waveform-container">
+        <canvas
+          id="waveCanvas"
+          width="800"
+          height="200"
+          class="w-full"
+        ></canvas>
+      </div>
+      </div>
+    </div>
+
+    <!-- ログパネル -->
+    <div id="logPanel" class="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="togglePanel('logContent', 'logIcon')">
+        <h2 class="text-lg font-bold text-gray-800">📋 デバッグログ</h2>
+        <span id="logIcon" class="text-gray-500 text-xl transition-transform">▼</span>
+      </div>
+      <div id="logContent">
+      <div id="logContainer" class="bg-gray-900 text-gray-100 p-4 rounded font-mono text-xs h-40 overflow-y-auto"></div>
+      <button id="clearLog" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white py-1 px-3 rounded text-sm">
+        ログをクリア
+      </button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+// openai_tts_realtime_t.ts
+function togglePanel(contentId, iconId) {
+  const content = document.getElementById(contentId);
+  const icon = document.getElementById(iconId);
+  if (content.style.display === "none") {
+    content.style.display = "";
+    icon.textContent = "\u25BC";
+    icon.style.transform = "rotate(0deg)";
+  } else {
+    content.style.display = "none";
+    icon.textContent = "\u25B6";
+    icon.style.transform = "rotate(-90deg)";
+  }
+}
+function addLog(message) {
+  const logContainer = document.getElementById("logContainer");
+  const timestamp = (/* @__PURE__ */ new Date()).toLocaleTimeString("ja-JP");
+  const logEntry = document.createElement("div");
+  logEntry.textContent = `[${timestamp}] ${message}`;
+  logContainer.appendChild(logEntry);
+  logContainer.scrollTop = logContainer.scrollHeight;
+}
+var audioContext = new (window.AudioContext || window.webkitAudioContext)({
+  sampleRate: 24e3
+});
+var pendingBytes = new Uint8Array(0);
+var pendingBytesQueue = [];
+var leftover = new Uint8Array(0);
+var isPlaying = false;
+var sourceNode = null;
+var idxForceStop = -1;
+var nextPlayIndex = 0;
+var activePlayingSources = /* @__PURE__ */ new Map();
+var concurrentPlayDetected = false;
+var playbackQueue = [];
+var MAX_CONCURRENT_REQUESTS = 3;
+var activeRequests = /* @__PURE__ */ new Set();
+async function waitForPreviousPlayback(myCnt) {
+  const waitingNotice = document.getElementById("waitingNotice");
+  const waitingInfo = document.getElementById("waitingInfo");
+  let hasLogged = false;
+  while (activePlayingSources.size > 0) {
+    const otherPlaying = Array.from(activePlayingSources.keys()).filter((idx) => idx !== myCnt);
+    if (otherPlaying.length === 0) break;
+    waitingNotice.classList.remove("hidden");
+    waitingInfo.textContent = `\u884C${myCnt}\u304C\u5F85\u6A5F\u4E2D (\u518D\u751F\u4E2D: [${otherPlaying.join(", ")}])`;
+    if (!hasLogged) {
+      addLog(`\u884C${myCnt}: \u4ED6\u306E\u97F3\u58F0\u304C\u518D\u751F\u4E2D\u306E\u305F\u3081\u5F85\u6A5F... (\u518D\u751F\u4E2D: [${otherPlaying.join(", ")}])`);
+      hasLogged = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  waitingNotice.classList.add("hidden");
+}
+var analyserNode = audioContext.createAnalyser();
+analyserNode.fftSize = 1024;
+var dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+var waveCanvas = document.getElementById("waveCanvas");
+var waveCtx = waveCanvas.getContext("2d");
+var playTimeout = 15 * 1e3;
+var intervalPerLine = 1;
+var actualDurations = {};
+function drawWaveform() {
+  requestAnimationFrame(drawWaveform);
+  waveCtx.fillStyle = "#667eea";
+  waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+  analyserNode.getByteTimeDomainData(dataArray);
+  waveCtx.lineWidth = 2;
+  waveCtx.strokeStyle = "#fff";
+  waveCtx.beginPath();
+  const sliceWidth = waveCanvas.width * 1 / dataArray.length;
+  let x = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    const v = dataArray[i] / 128;
+    const y = v * waveCanvas.height / 2;
+    if (i === 0) waveCtx.moveTo(x, y);
+    else waveCtx.lineTo(x, y);
+    x += sliceWidth;
+  }
+  waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+  waveCtx.stroke();
+}
+var playTexts = [];
+var playStart = performance.now();
+var statuses = [];
+var playStarts = [];
+var STATUS_START = 0;
+var STATUS_PUSHED = 1;
+var STATUS_END = 2;
+var curPlaying = 0;
+function updateStatusDisplay() {
+  const container = document.getElementById("statusContainer");
+  container.innerHTML = "";
+  const activeItems = [];
+  for (let i = 0; i < statuses.length; i++) {
+    if (statuses[i] !== STATUS_END && !activePlayingSources.has(i) && i > curPlaying) {
+      activeItems.push(i);
+    }
+  }
+  const displayItems = activeItems.slice(Math.max(0, activeItems.length - 5));
+  for (const i of displayItems) {
+    const statusText = ["\u6E96\u5099\u4E2D", "\u518D\u751F\u5F85\u3061", "\u5B8C\u4E86"][statuses[i]] || "\u4E0D\u660E";
+    const statusClass = ["status-start", "status-pushed", "status-end"][statuses[i]] || "status-start";
+    const div = document.createElement("div");
+    div.className = `text-xs truncate`;
+    div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> \u884C${i}`;
+    container.appendChild(div);
+  }
+  updateBufferStatus();
+}
+function updateBufferStatus() {
+  const requesting = document.getElementById("requestingCount");
+  const queued = document.getElementById("queuedCount");
+  requesting.textContent = String(activeRequests.size);
+  queued.textContent = String(pendingBytesQueue.length);
+}
+function updateConcurrentPlayingDisplay() {
+  const playingList = document.getElementById("playingList");
+  const warningDiv = document.getElementById("concurrentWarning");
+  const countSpan = document.getElementById("concurrentCount");
+  if (activePlayingSources.size === 0) {
+    playingList.innerHTML = '<p class="text-gray-500">\u306A\u3057</p>';
+    warningDiv.classList.add("hidden");
+    concurrentPlayDetected = false;
+  } else {
+    playingList.innerHTML = "";
+    const entries = Array.from(activePlayingSources.entries());
+    entries.forEach(([idx, info]) => {
+      const div = document.createElement("div");
+      const elapsed = (performance.now() - info.startTime) / 1e3;
+      const isConcurrent = activePlayingSources.size > 1;
+      div.className = `p-2 rounded ${isConcurrent ? "bg-red-100 border border-red-300" : "bg-blue-100"}`;
+      div.innerHTML = `
+        <div class="font-bold ${isConcurrent ? "text-red-700" : "text-blue-700"}">
+          ${isConcurrent ? "\u26A0\uFE0F " : "\u25B6\uFE0F "}\u884C${idx}
+        </div>
+        <div class="text-xs text-gray-600 truncate">${info.text.substring(0, 30)}...</div>
+        <div class="text-xs text-gray-500">\u7D4C\u904E: ${elapsed.toFixed(1)}\u79D2</div>
+      `;
+      playingList.appendChild(div);
+    });
+    if (activePlayingSources.size > 1) {
+      warningDiv.classList.remove("hidden");
+      countSpan.textContent = `${activePlayingSources.size}\u500B\u306E\u97F3\u58F0\u304C\u540C\u6642\u518D\u751F\u4E2D`;
+      if (!concurrentPlayDetected) {
+        concurrentPlayDetected = true;
+        addLog(`\u26A0\uFE0F \u591A\u91CD\u518D\u751F\u691C\u77E5: ${activePlayingSources.size}\u500B\u306E\u97F3\u58F0\u304C\u540C\u6642\u518D\u751F\u3055\u308C\u3066\u3044\u307E\u3059`);
+      }
+    } else {
+      warningDiv.classList.add("hidden");
+      concurrentPlayDetected = false;
+    }
+  }
+}
+function updateTimerDisplay() {
+  const elapsedElem = document.getElementById("elapsedTime");
+  const remainingElem = document.getElementById("remainingTime");
+  if (curPlaying < 0 || !playStarts[curPlaying]) {
+    elapsedElem.textContent = "0.0";
+    remainingElem.textContent = "0.0";
+    updateBufferStatus();
+    return;
+  }
+  if (isPlaying && sourceNode && sourceNode.buffer) {
+    const elapsed = audioContext.currentTime - playStarts[curPlaying];
+    const remaining = sourceNode.buffer.duration - elapsed;
+    elapsedElem.textContent = elapsed.toFixed(1);
+    remainingElem.textContent = Math.max(0, remaining).toFixed(1);
+  }
+  updateConcurrentPlayingDisplay();
+  updateBufferStatus();
+}
+setInterval(updateTimerDisplay, 100);
+function EndStatuses(cur) {
+  if (cur - 5 < 0) return;
+  for (let i = Math.max(0, cur - 5); i <= cur; i++) {
+    if (statuses[i] !== STATUS_END) statuses[i] = STATUS_END;
+  }
+  updateStatusDisplay();
+}
+function getRemainingTime(myCnt) {
+  if (actualDurations[myCnt] !== void 0) {
+    return actualDurations[myCnt] * 1e3 + 500;
+  }
+  if (sourceNode == null) return playTimeout;
+  const totalDuration = sourceNode.buffer.duration + intervalPerLine;
+  return Math.max(playTimeout, totalDuration * 1e3);
+}
+async function schedulePlayback(myCnt) {
+  if (myCnt !== nextPlayIndex) {
+    playbackQueue.push(myCnt);
+    addLog(`\u884C${myCnt}: \u30AD\u30E5\u30FC\u306B\u767B\u9332\uFF08\u6B21\u306F${nextPlayIndex}\u3092\u5F85\u6A5F\uFF09`);
+    return;
+  }
+  if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
+    isPlaying = false;
+    EndStatuses(curPlaying);
+    idxForceStop = curPlaying;
+    addLog(`\u5F37\u5236\u505C\u6B62: ${curPlaying} (\u30BF\u30A4\u30E0\u30A2\u30A6\u30C8)`);
+    console.log("force stop: ", curPlaying);
+    return;
+  }
+  if (activePlayingSources.size > 0) {
+    const waitingFor = Array.from(activePlayingSources.keys());
+    addLog(`\u884C${myCnt}: \u5F85\u6A5F\u958B\u59CB (\u518D\u751F\u4E2D: [${waitingFor.join(", ")}])`);
+    await waitForPreviousPlayback(myCnt);
+    addLog(`\u884C${myCnt}: \u5F85\u6A5F\u7D42\u4E86\u3001\u518D\u751F\u3092\u958B\u59CB\u3057\u307E\u3059`);
+  }
+  if (isPlaying) {
+    addLog(`\u884C${myCnt}: \u65E2\u306B\u4ED6\u306E\u97F3\u58F0\u304C\u518D\u751F\u4E2D\u306E\u305F\u3081\u30B9\u30AD\u30C3\u30D7`);
+    return;
+  }
+  if (pendingBytesQueue.length === 0) {
+    addLog(`\u884C${myCnt}: \u30AD\u30E5\u30FC\u304C\u7A7A\u306E\u305F\u3081\u518D\u751F\u3067\u304D\u307E\u305B\u3093`);
+    return;
+  }
+  if (playTexts.length === 0) {
+    addLog(`\u884C${myCnt}: \u30C6\u30AD\u30B9\u30C8\u304C\u7A7A\u306E\u305F\u3081\u518D\u751F\u3067\u304D\u307E\u305B\u3093`);
+    return;
+  }
+  curPlaying = myCnt;
+  isPlaying = true;
+  nextPlayIndex++;
+  playStart = performance.now();
+  const ctext = playTexts.shift();
+  document.getElementById("prevText").innerText = document.getElementById("currentText").innerText;
+  document.getElementById("currentText").innerText = ctext;
+  document.getElementById("curIdx").innerText = String(curPlaying);
+  addLog(`\u518D\u751F\u958B\u59CB: \u884C${curPlaying} "${ctext.substring(0, 20)}..."`);
+  const dataToPlay = pendingBytesQueue.shift();
+  const int16Data = new Int16Array(dataToPlay.buffer);
+  const float32Data = new Float32Array(int16Data.length);
+  for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768;
+  const fadeLength = Math.min(480, Math.floor(float32Data.length * 0.02));
+  for (let i = 0; i < fadeLength; i++) {
+    const fadeMultiplier = i / fadeLength;
+    float32Data[i] *= fadeMultiplier;
+  }
+  for (let i = 0; i < fadeLength; i++) {
+    const fadeMultiplier = i / fadeLength;
+    float32Data[float32Data.length - 1 - i] *= fadeMultiplier;
+  }
+  const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
+  audioBuffer.copyToChannel(float32Data, 0);
+  const actualDuration = audioBuffer.duration;
+  actualDurations[myCnt] = actualDuration;
+  addLog(`\u97F3\u58F0\u30C7\u30FC\u30BF\u9577: \u884C${myCnt} ${actualDuration.toFixed(2)}\u79D2`);
+  sourceNode = audioContext.createBufferSource();
+  sourceNode.buffer = audioBuffer;
+  activePlayingSources.set(myCnt, {
+    startTime: performance.now(),
+    text: ctext,
+    sourceNode
+  });
+  if (activePlayingSources.size > 1) {
+    const activeIndices = Array.from(activePlayingSources.keys()).join(", ");
+    addLog(`\u26A0\uFE0F \u8B66\u544A: \u591A\u91CD\u518D\u751F\u691C\u77E5\uFF01 \u518D\u751F\u4E2D\u306E\u884C: [${activeIndices}]`);
+  }
+  updateConcurrentPlayingDisplay();
+  sourceNode.connect(analyserNode);
+  analyserNode.connect(audioContext.destination);
+  sourceNode.onended = () => {
+    isPlaying = false;
+    activePlayingSources.delete(myCnt);
+    updateConcurrentPlayingDisplay();
+    highlightActiveLine();
+    if (idxForceStop > -1 && idxForceStop !== curPlaying) {
+      EndStatuses(curPlaying - 1);
+      idxForceStop = -1;
+      return;
+    }
+    EndStatuses(curPlaying);
+    addLog(`\u518D\u751F\u5B8C\u4E86: \u884C${curPlaying}`);
+    idxForceStop = -1;
+    if (playbackQueue.length > 0) {
+      const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
+      if (nextIdxPosition >= 0) {
+        playbackQueue.splice(nextIdxPosition, 1);
+        addLog(`\u30AD\u30E5\u30FC\u304B\u3089\u53D6\u308A\u51FA\u3057: \u884C${nextPlayIndex}\u3092${intervalPerLine}\u79D2\u5F8C\u306B\u518D\u751F\u958B\u59CB`);
+        setTimeout(() => {
+          schedulePlayback(nextPlayIndex);
+        }, intervalPerLine * 1e3);
+      } else {
+        addLog(`\u8B66\u544A: \u30AD\u30E5\u30FC\u306B\u6B21\u306E\u884C${nextPlayIndex}\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\uFF08\u30AD\u30E5\u30FC: [${playbackQueue.join(", ")}]\uFF09`);
+      }
+    }
+  };
+  sourceNode.start();
+  playStarts[curPlaying] = audioContext.currentTime;
+}
+drawWaveform();
+var isPause = false;
+var isStop = false;
+document.getElementById("pause").addEventListener("click", () => {
+  if (isPause) {
+    audioContext.resume().then(() => {
+      isPause = false;
+      document.getElementById("pause").innerText = "\u23F8\uFE0F \u4E00\u6642\u505C\u6B62";
+      addLog("\u518D\u958B\u3057\u307E\u3057\u305F");
+    });
+  } else {
+    audioContext.suspend().then(() => {
+      isPause = true;
+      document.getElementById("pause").innerText = "\u25B6\uFE0F \u518D\u958B";
+      addLog("\u4E00\u6642\u505C\u6B62\u3057\u307E\u3057\u305F");
+    });
+  }
+});
+document.getElementById("stop").addEventListener("click", () => {
+  isStop = true;
+  activePlayingSources.forEach((info, idx) => {
+    if (info.sourceNode) {
+      try {
+        info.sourceNode.stop();
+        info.sourceNode.disconnect();
+      } catch (e) {
+        console.error(`\u884C${idx}\u306E\u505C\u6B62\u30A8\u30E9\u30FC:`, e);
+      }
+    }
+  });
+  if (sourceNode) {
+    try {
+      sourceNode.stop();
+    } catch (e) {
+    }
+    try {
+      sourceNode.disconnect();
+    } catch (e) {
+    }
+    isPlaying = false;
+    pendingBytes = new Uint8Array(0);
+    leftover = new Uint8Array(0);
+  }
+  activePlayingSources.clear();
+  updateConcurrentPlayingDisplay();
+  addLog("\u518D\u751F\u3092\u505C\u6B62\u3057\u307E\u3057\u305F");
+});
+document.getElementById("clearLog").addEventListener("click", () => {
+  document.getElementById("logContainer").innerHTML = "";
+});
+async function loadTemplateFiles() {
+  try {
+    const response = await fetch("http://10.2.1.15:19999/listfiles");
+    const data = await response.json();
+    const select = document.getElementById("templateFileSelect");
+    select.innerHTML = '<option value="">-- \u30D5\u30A1\u30A4\u30EB\u3092\u9078\u629E --</option>';
+    data.files.forEach((file) => {
+      if (!file.endsWith(".html")) {
+        const option = document.createElement("option");
+        option.value = file;
+        option.textContent = file;
+        select.appendChild(option);
+      }
+    });
+  } catch (error) {
+    console.error("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u4E00\u89A7\u306E\u8AAD\u307F\u8FBC\u307F\u30A8\u30E9\u30FC:", error);
+  }
+}
+async function loadTemplateFileContent(selectedFile) {
+  if (!selectedFile) return;
+  try {
+    const response = await fetch(`http://10.2.1.15:19999/test?message=${encodeURIComponent(selectedFile)}`);
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const textarea = doc.querySelector("#textInput");
+    if (textarea) {
+      document.getElementById("textInput").value = textarea.textContent || "";
+      addLog(`\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u8AAD\u307F\u8FBC\u307F: ${selectedFile}`);
+      updateTextDisplay();
+    }
+  } catch (error) {
+    console.error("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u8AAD\u307F\u8FBC\u307F\u30A8\u30E9\u30FC:", error);
+    addLog(`\u30A8\u30E9\u30FC: \u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u300C${selectedFile}\u300D\u3092\u8AAD\u307F\u8FBC\u3081\u307E\u305B\u3093`);
+  }
+}
+document.getElementById("templateFileSelect").addEventListener("change", async (e) => {
+  const selectedFile = e.target.value;
+  if (!selectedFile) return;
+  await loadTemplateFileContent(selectedFile);
+});
+window.addEventListener("load", async () => {
+  updateTextDisplay();
+  const urlParams = new URLSearchParams(window.location.search);
+  const startLine = urlParams.get("l");
+  if (startLine !== null) {
+    document.getElementById("startLineNumber").value = startLine;
+    addLog(`\u{1F4CD} \u958B\u59CB\u884C\u756A\u53F7\u3092\u8A2D\u5B9A: ${startLine}`);
+  }
+  const voiceNum = urlParams.get("voiceNumber");
+  if (voiceNum !== null) {
+    document.getElementById("voiceNumber").value = voiceNum;
+    addLog(`\u{1F3A4} \u97F3\u58F0\u756A\u53F7\u3092\u8A2D\u5B9A: ${voiceNum}`);
+  }
+  const speed = urlParams.get("playbackSpeed");
+  if (speed !== null) {
+    document.getElementById("playbackSpeed").value = speed;
+    addLog(`\u23F1\uFE0F \u518D\u751F\u901F\u5EA6\u3092\u8A2D\u5B9A: ${speed}`);
+  }
+  await loadTemplateFiles();
+  const message = urlParams.get("message");
+  if (message !== null) {
+    document.getElementById("templateFileSelect").value = message;
+    addLog(`\u{1F4C4} \u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u3092\u8A2D\u5B9A: ${message}`);
+    await loadTemplateFileContent(message);
+  }
+  document.getElementById("voiceNumber").addEventListener("change", (e) => {
+    addLog(`\u{1F3A4} \u97F3\u58F0\u756A\u53F7\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+  document.getElementById("playbackSpeed").addEventListener("change", (e) => {
+    addLog(`\u23F1\uFE0F \u518D\u751F\u901F\u5EA6\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+  document.getElementById("concurrentRequests").addEventListener("change", (e) => {
+    MAX_CONCURRENT_REQUESTS = parseInt(e.target.value) || 3;
+    addLog(`\u{1F4CA} \u4E26\u884C\u30EA\u30AF\u30A8\u30B9\u30C8\u6570\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+});
+var model = "voicevox-v1";
+var responseFormat = "pcm";
+function getVoiceNumber() {
+  return document.getElementById("voiceNumber").value || "1";
+}
+function getPlaybackSpeed() {
+  return parseFloat(document.getElementById("playbackSpeed").value) || 1;
+}
+var cnt = 0;
+async function processStream(reader, myCnt) {
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (isStop) return;
+      if (done) {
+        if (leftover.length >= 2) {
+          const leftoverUseBytes = leftover.length - leftover.length % 2;
+          if (leftoverUseBytes > 0) {
+            const leftoverChunk = leftover.slice(0, leftoverUseBytes);
+            const newPending = new Uint8Array(pendingBytes.length + leftoverChunk.length);
+            newPending.set(pendingBytes, 0);
+            newPending.set(leftoverChunk, pendingBytes.length);
+            pendingBytes = newPending;
+          }
+        }
+        leftover = new Uint8Array(0);
+        addLog(`\u30C7\u30FC\u30BF\u53D7\u4FE1\u5B8C\u4E86: \u884C${myCnt} (${pendingBytes.length}\u30D0\u30A4\u30C8)`);
+        if (pendingBytes.length > 0) {
+          pendingBytesQueue.push(pendingBytes);
+          statuses[myCnt] = STATUS_PUSHED;
+          updateStatusDisplay();
+          addLog(`\u30AD\u30E5\u30FC\u306B\u8FFD\u52A0: \u884C${myCnt} (\u30AD\u30E5\u30FC\u5185: ${pendingBytesQueue.length})`);
+          schedulePlayback(myCnt);
+          highlightActiveLine();
+        }
+        pendingBytes = new Uint8Array(0);
+        return;
+      }
+      const chunk = value || new Uint8Array(0);
+      const combined = new Uint8Array(leftover.length + chunk.length);
+      combined.set(leftover, 0);
+      combined.set(chunk, leftover.length);
+      leftover = new Uint8Array(0);
+      const useBytes = combined.length - combined.length % 2;
+      if (useBytes > 0) {
+        const validChunk = combined.slice(0, useBytes);
+        const newPending = new Uint8Array(pendingBytes.length + validChunk.length);
+        newPending.set(pendingBytes, 0);
+        newPending.set(validChunk, pendingBytes.length);
+        pendingBytes = newPending;
+      }
+      if (useBytes < combined.length) leftover = combined.slice(useBytes);
+    }
+  } catch (e) {
+    addLog(`\u30B9\u30C8\u30EA\u30FC\u30E0\u51E6\u7406\u4E2D\u306E\u30A8\u30E9\u30FC: \u884C${myCnt} - ${e.message}`);
+    console.error(e);
+  }
+}
+var f = (text) => {
+  return new Promise((resolve) => {
+    playTexts.push(text);
+    const myCnt = cnt++;
+    statuses[myCnt] = STATUS_START;
+    updateStatusDisplay();
+    addLog(`API\u30EA\u30AF\u30A8\u30B9\u30C8\u9001\u4FE1: \u884C${myCnt} "${text.substring(0, 30)}..."`);
+    activeRequests.add(myCnt);
+    fetch("http://10.2.1.15:19999/run2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: text, voice: getVoiceNumber(), speed: getPlaybackSpeed(), response_format: responseFormat })
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
+      addLog(`API\u30EC\u30B9\u30DD\u30F3\u30B9\u53D7\u4FE1: \u884C${myCnt}`);
+      const reader = response.body.getReader();
+      while (myCnt > 0 && statuses[myCnt - 1] < STATUS_PUSHED) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      resolve();
+      await processStream(reader, myCnt);
+    }).catch((error) => {
+      addLog(`\u30A8\u30E9\u30FC: \u884C${myCnt} - ${error.message}`);
+      console.error("\u30A8\u30E9\u30FC:", error);
+    }).finally(() => {
+      activeRequests.delete(myCnt);
+    });
+  });
+};
+function updateTextDisplay() {
+  const textInput = document.getElementById("textInput").value.trim();
+  const texts = textInput.split("\u3002").filter((t) => t.length > 0);
+  const textDisplay = document.getElementById("textDisplay");
+  textDisplay.innerHTML = "";
+  texts.forEach((text, index) => {
+    const span = document.createElement("span");
+    span.id = `text-line-${index}`;
+    span.className = "px-2 py-1 rounded transition-colors";
+    span.textContent = text + "\u3002";
+    textDisplay.appendChild(span);
+    if (index < texts.length - 1) textDisplay.appendChild(document.createTextNode(" "));
+  });
+}
+function highlightActiveLine() {
+  document.querySelectorAll("#textDisplay span").forEach((span) => {
+    span.classList.remove("bg-yellow-300", "font-bold");
+  });
+  Array.from(activePlayingSources.keys()).forEach((idx) => {
+    const span = document.getElementById(`text-line-${idx}`);
+    if (span) span.classList.add("bg-yellow-300", "font-bold");
+  });
+}
+document.getElementById("textInput").addEventListener("change", updateTextDisplay);
+document.getElementById("textInput").addEventListener("input", updateTextDisplay);
+document.getElementById("startButton").addEventListener("click", async () => {
+  const apiKey = document.getElementById("apiKeyInput").value.trim();
+  const textInputVal = document.getElementById("textInput").value.trim();
+  const allTexts = textInputVal.split("\u3002").filter((t) => t.length > 0);
+  if (allTexts.length === 0) {
+    alert("\u30C6\u30AD\u30B9\u30C8\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+    return;
+  }
+  const startLineInput = document.getElementById("startLineNumber");
+  const startLineNumber = Math.max(0, parseInt(startLineInput.value) || 0);
+  if (startLineNumber >= allTexts.length) {
+    alert(`\u958B\u59CB\u884C\u756A\u53F7\u304C\u5927\u304D\u3059\u304E\u307E\u3059\u30020\uFF5E${allTexts.length - 1}\u306E\u7BC4\u56F2\u3067\u6307\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
+    return;
+  }
+  const texts = allTexts.slice(startLineNumber);
+  addLog(`\u958B\u59CB\u884C: ${startLineNumber}\u884C\u76EE\u304B\u3089\uFF08\u5168${texts.length}\u884C\u3092\u51E6\u7406\uFF09`);
+  const concurrentInput = document.getElementById("concurrentRequests");
+  MAX_CONCURRENT_REQUESTS = Math.max(1, Math.min(10, parseInt(concurrentInput.value) || 3));
+  cnt = startLineNumber;
+  nextPlayIndex = startLineNumber;
+  statuses = [];
+  playTexts = [];
+  pendingBytes = new Uint8Array(0);
+  pendingBytesQueue = [];
+  leftover = new Uint8Array(0);
+  isPlaying = false;
+  isStop = false;
+  for (const k in actualDurations) delete actualDurations[Number(k)];
+  activePlayingSources.clear();
+  playbackQueue = [];
+  activeRequests.clear();
+  concurrentPlayDetected = false;
+  updateConcurrentPlayingDisplay();
+  document.getElementById("waitingNotice").classList.add("hidden");
+  updateTextDisplay();
+  addLog(`\u518D\u751F\u958B\u59CB: ${texts.length}\u884C\u306E\u30C6\u30AD\u30B9\u30C8\u3092\u51E6\u7406\u3057\u307E\u3059`);
+  addLog(`\u4E26\u884C\u30EA\u30AF\u30A8\u30B9\u30C8\u6570: ${MAX_CONCURRENT_REQUESTS} \u884C`);
+  document.getElementById("currentText").innerText = texts[0].trim();
+  updateStatusDisplay();
+  try {
+    let currentIndex = 0;
+    while (currentIndex < texts.length) {
+      let availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+      let waitLoggedOnce = false;
+      while (availableSlots <= 0) {
+        if (!waitLoggedOnce) {
+          addLog(`\u23F8\uFE0F \u518D\u751F\u5F85\u3061\u884C\u6570\u304C\u591A\u3044\u305F\u3081\u5F85\u6A5F\u4E2D\uFF08\u5F85\u3061\uFF1A${pendingBytesQueue.length}\u884C\u3001\u6700\u5927\uFF1A${MAX_CONCURRENT_REQUESTS}\u884C\uFF09`);
+          waitLoggedOnce = true;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+      }
+      const batchSize = Math.min(availableSlots, texts.length - currentIndex);
+      const batch = [];
+      for (let i = 0; i < batchSize; i++) batch.push(f(texts[currentIndex + i].trim()));
+      addLog(`\u30D0\u30C3\u30C1\u51E6\u7406: \u884C${currentIndex}\uFF5E${currentIndex + batchSize - 1} (${batchSize}\u884C\u3001\u6709\u52B9\u30B9\u30ED\u30C3\u30C8\uFF1A${availableSlots}/${MAX_CONCURRENT_REQUESTS})`);
+      await Promise.all(batch);
+      currentIndex += batchSize;
+      if (currentIndex < texts.length) await new Promise((r) => setTimeout(r, 200));
+    }
+    addLog("\u3059\u3079\u3066\u306E\u30C6\u30AD\u30B9\u30C8\u306E\u51E6\u7406\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F");
+  } catch (error) {
+    addLog(`\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F: ${error.message}`);
+    console.error("\u30A8\u30E9\u30FC:", error);
+    alert("\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F\u3002\u30B3\u30F3\u30BD\u30FC\u30EB\u3092\u3054\u78BA\u8A8D\u304F\u3060\u3055\u3044\u3002");
+  }
+});
+function generateLineURLAndOpen() {
+  const curLineNum = parseInt(document.getElementById("curIdx").textContent || "0") || 0;
+  const voiceNum = getVoiceNumber();
+  const speed = getPlaybackSpeed();
+  const selectedFile = document.getElementById("templateFileSelect").value;
+  let url = `http://10.2.1.15:19999/test?`;
+  url += `l=${curLineNum}`;
+  if (selectedFile) url += `&message=${encodeURIComponent(selectedFile)}`;
+  url += `&voiceNumber=${encodeURIComponent(voiceNum)}&playbackSpeed=${encodeURIComponent(String(speed))}`;
+  addLog(`\u{1F517} URL\u3092\u958B\u304F: ${url}`);
+  window.open(url, "_blank");
+}
+window.togglePanel = togglePanel;
+window.generateLineURLAndOpen = generateLineURLAndOpen;
+
+</script>
+<script type="module">
+// openai_tts_realtime_t.ts
+function togglePanel(contentId, iconId) {
+  const content = document.getElementById(contentId);
+  const icon = document.getElementById(iconId);
+  if (content.style.display === "none") {
+    content.style.display = "";
+    icon.textContent = "\u25BC";
+    icon.style.transform = "rotate(0deg)";
+  } else {
+    content.style.display = "none";
+    icon.textContent = "\u25B6";
+    icon.style.transform = "rotate(-90deg)";
+  }
+}
+function addLog(message) {
+  const logContainer = document.getElementById("logContainer");
+  const timestamp = (/* @__PURE__ */ new Date()).toLocaleTimeString("ja-JP");
+  const logEntry = document.createElement("div");
+  logEntry.textContent = `[${timestamp}] ${message}`;
+  logContainer.appendChild(logEntry);
+  logContainer.scrollTop = logContainer.scrollHeight;
+}
+var audioContext = new (window.AudioContext || window.webkitAudioContext)({
+  sampleRate: 24e3
+});
+var pendingBytes = new Uint8Array(0);
+var pendingBytesQueue = [];
+var leftover = new Uint8Array(0);
+var isPlaying = false;
+var sourceNode = null;
+var idxForceStop = -1;
+var nextPlayIndex = 0;
+var activePlayingSources = /* @__PURE__ */ new Map();
+var concurrentPlayDetected = false;
+var playbackQueue = [];
+var MAX_CONCURRENT_REQUESTS = 3;
+var activeRequests = /* @__PURE__ */ new Set();
+async function waitForPreviousPlayback(myCnt) {
+  const waitingNotice = document.getElementById("waitingNotice");
+  const waitingInfo = document.getElementById("waitingInfo");
+  let hasLogged = false;
+  while (activePlayingSources.size > 0) {
+    const otherPlaying = Array.from(activePlayingSources.keys()).filter((idx) => idx !== myCnt);
+    if (otherPlaying.length === 0) break;
+    waitingNotice.classList.remove("hidden");
+    waitingInfo.textContent = `\u884C${myCnt}\u304C\u5F85\u6A5F\u4E2D (\u518D\u751F\u4E2D: [${otherPlaying.join(", ")}])`;
+    if (!hasLogged) {
+      addLog(`\u884C${myCnt}: \u4ED6\u306E\u97F3\u58F0\u304C\u518D\u751F\u4E2D\u306E\u305F\u3081\u5F85\u6A5F... (\u518D\u751F\u4E2D: [${otherPlaying.join(", ")}])`);
+      hasLogged = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  waitingNotice.classList.add("hidden");
+}
+var analyserNode = audioContext.createAnalyser();
+analyserNode.fftSize = 1024;
+var dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+var waveCanvas = document.getElementById("waveCanvas");
+var waveCtx = waveCanvas.getContext("2d");
+var playTimeout = 15 * 1e3;
+var intervalPerLine = 1;
+var actualDurations = {};
+function drawWaveform() {
+  requestAnimationFrame(drawWaveform);
+  waveCtx.fillStyle = "#667eea";
+  waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+  analyserNode.getByteTimeDomainData(dataArray);
+  waveCtx.lineWidth = 2;
+  waveCtx.strokeStyle = "#fff";
+  waveCtx.beginPath();
+  const sliceWidth = waveCanvas.width * 1 / dataArray.length;
+  let x = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    const v = dataArray[i] / 128;
+    const y = v * waveCanvas.height / 2;
+    if (i === 0) waveCtx.moveTo(x, y);
+    else waveCtx.lineTo(x, y);
+    x += sliceWidth;
+  }
+  waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+  waveCtx.stroke();
+}
+var playTexts = [];
+var playStart = performance.now();
+var statuses = [];
+var playStarts = [];
+var STATUS_START = 0;
+var STATUS_PUSHED = 1;
+var STATUS_END = 2;
+var curPlaying = 0;
+function updateStatusDisplay() {
+  const container = document.getElementById("statusContainer");
+  container.innerHTML = "";
+  const activeItems = [];
+  for (let i = 0; i < statuses.length; i++) {
+    if (statuses[i] !== STATUS_END && !activePlayingSources.has(i) && i > curPlaying) {
+      activeItems.push(i);
+    }
+  }
+  const displayItems = activeItems.slice(Math.max(0, activeItems.length - 5));
+  for (const i of displayItems) {
+    const statusText = ["\u6E96\u5099\u4E2D", "\u518D\u751F\u5F85\u3061", "\u5B8C\u4E86"][statuses[i]] || "\u4E0D\u660E";
+    const statusClass = ["status-start", "status-pushed", "status-end"][statuses[i]] || "status-start";
+    const div = document.createElement("div");
+    div.className = `text-xs truncate`;
+    div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> \u884C${i}`;
+    container.appendChild(div);
+  }
+  updateBufferStatus();
+}
+function updateBufferStatus() {
+  const requesting = document.getElementById("requestingCount");
+  const queued = document.getElementById("queuedCount");
+  requesting.textContent = String(activeRequests.size);
+  queued.textContent = String(pendingBytesQueue.length);
+}
+function updateConcurrentPlayingDisplay() {
+  const playingList = document.getElementById("playingList");
+  const warningDiv = document.getElementById("concurrentWarning");
+  const countSpan = document.getElementById("concurrentCount");
+  if (activePlayingSources.size === 0) {
+    playingList.innerHTML = '<p class="text-gray-500">\u306A\u3057</p>';
+    warningDiv.classList.add("hidden");
+    concurrentPlayDetected = false;
+  } else {
+    playingList.innerHTML = "";
+    const entries = Array.from(activePlayingSources.entries());
+    entries.forEach(([idx, info]) => {
+      const div = document.createElement("div");
+      const elapsed = (performance.now() - info.startTime) / 1e3;
+      const isConcurrent = activePlayingSources.size > 1;
+      div.className = `p-2 rounded ${isConcurrent ? "bg-red-100 border border-red-300" : "bg-blue-100"}`;
+      div.innerHTML = `
+        <div class="font-bold ${isConcurrent ? "text-red-700" : "text-blue-700"}">
+          ${isConcurrent ? "\u26A0\uFE0F " : "\u25B6\uFE0F "}\u884C${idx}
+        </div>
+        <div class="text-xs text-gray-600 truncate">${info.text.substring(0, 30)}...</div>
+        <div class="text-xs text-gray-500">\u7D4C\u904E: ${elapsed.toFixed(1)}\u79D2</div>
+      `;
+      playingList.appendChild(div);
+    });
+    if (activePlayingSources.size > 1) {
+      warningDiv.classList.remove("hidden");
+      countSpan.textContent = `${activePlayingSources.size}\u500B\u306E\u97F3\u58F0\u304C\u540C\u6642\u518D\u751F\u4E2D`;
+      if (!concurrentPlayDetected) {
+        concurrentPlayDetected = true;
+        addLog(`\u26A0\uFE0F \u591A\u91CD\u518D\u751F\u691C\u77E5: ${activePlayingSources.size}\u500B\u306E\u97F3\u58F0\u304C\u540C\u6642\u518D\u751F\u3055\u308C\u3066\u3044\u307E\u3059`);
+      }
+    } else {
+      warningDiv.classList.add("hidden");
+      concurrentPlayDetected = false;
+    }
+  }
+}
+function updateTimerDisplay() {
+  const elapsedElem = document.getElementById("elapsedTime");
+  const remainingElem = document.getElementById("remainingTime");
+  if (curPlaying < 0 || !playStarts[curPlaying]) {
+    elapsedElem.textContent = "0.0";
+    remainingElem.textContent = "0.0";
+    updateBufferStatus();
+    return;
+  }
+  if (isPlaying && sourceNode && sourceNode.buffer) {
+    const elapsed = audioContext.currentTime - playStarts[curPlaying];
+    const remaining = sourceNode.buffer.duration - elapsed;
+    elapsedElem.textContent = elapsed.toFixed(1);
+    remainingElem.textContent = Math.max(0, remaining).toFixed(1);
+  }
+  updateConcurrentPlayingDisplay();
+  updateBufferStatus();
+}
+setInterval(updateTimerDisplay, 100);
+function EndStatuses(cur) {
+  if (cur - 5 < 0) return;
+  for (let i = Math.max(0, cur - 5); i <= cur; i++) {
+    if (statuses[i] !== STATUS_END) statuses[i] = STATUS_END;
+  }
+  updateStatusDisplay();
+}
+function getRemainingTime(myCnt) {
+  if (actualDurations[myCnt] !== void 0) {
+    return actualDurations[myCnt] * 1e3 + 500;
+  }
+  if (sourceNode == null) return playTimeout;
+  const totalDuration = sourceNode.buffer.duration + intervalPerLine;
+  return Math.max(playTimeout, totalDuration * 1e3);
+}
+async function schedulePlayback(myCnt) {
+  if (myCnt !== nextPlayIndex) {
+    playbackQueue.push(myCnt);
+    addLog(`\u884C${myCnt}: \u30AD\u30E5\u30FC\u306B\u767B\u9332\uFF08\u6B21\u306F${nextPlayIndex}\u3092\u5F85\u6A5F\uFF09`);
+    return;
+  }
+  if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
+    isPlaying = false;
+    EndStatuses(curPlaying);
+    idxForceStop = curPlaying;
+    addLog(`\u5F37\u5236\u505C\u6B62: ${curPlaying} (\u30BF\u30A4\u30E0\u30A2\u30A6\u30C8)`);
+    console.log("force stop: ", curPlaying);
+    return;
+  }
+  if (activePlayingSources.size > 0) {
+    const waitingFor = Array.from(activePlayingSources.keys());
+    addLog(`\u884C${myCnt}: \u5F85\u6A5F\u958B\u59CB (\u518D\u751F\u4E2D: [${waitingFor.join(", ")}])`);
+    await waitForPreviousPlayback(myCnt);
+    addLog(`\u884C${myCnt}: \u5F85\u6A5F\u7D42\u4E86\u3001\u518D\u751F\u3092\u958B\u59CB\u3057\u307E\u3059`);
+  }
+  if (isPlaying) {
+    addLog(`\u884C${myCnt}: \u65E2\u306B\u4ED6\u306E\u97F3\u58F0\u304C\u518D\u751F\u4E2D\u306E\u305F\u3081\u30B9\u30AD\u30C3\u30D7`);
+    return;
+  }
+  if (pendingBytesQueue.length === 0) {
+    addLog(`\u884C${myCnt}: \u30AD\u30E5\u30FC\u304C\u7A7A\u306E\u305F\u3081\u518D\u751F\u3067\u304D\u307E\u305B\u3093`);
+    return;
+  }
+  if (playTexts.length === 0) {
+    addLog(`\u884C${myCnt}: \u30C6\u30AD\u30B9\u30C8\u304C\u7A7A\u306E\u305F\u3081\u518D\u751F\u3067\u304D\u307E\u305B\u3093`);
+    return;
+  }
+  curPlaying = myCnt;
+  isPlaying = true;
+  nextPlayIndex++;
+  playStart = performance.now();
+  const ctext = playTexts.shift();
+  document.getElementById("prevText").innerText = document.getElementById("currentText").innerText;
+  document.getElementById("currentText").innerText = ctext;
+  document.getElementById("curIdx").innerText = String(curPlaying);
+  addLog(`\u518D\u751F\u958B\u59CB: \u884C${curPlaying} "${ctext.substring(0, 20)}..."`);
+  const dataToPlay = pendingBytesQueue.shift();
+  const int16Data = new Int16Array(dataToPlay.buffer);
+  const float32Data = new Float32Array(int16Data.length);
+  for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768;
+  const fadeLength = Math.min(480, Math.floor(float32Data.length * 0.02));
+  for (let i = 0; i < fadeLength; i++) {
+    const fadeMultiplier = i / fadeLength;
+    float32Data[i] *= fadeMultiplier;
+  }
+  for (let i = 0; i < fadeLength; i++) {
+    const fadeMultiplier = i / fadeLength;
+    float32Data[float32Data.length - 1 - i] *= fadeMultiplier;
+  }
+  const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
+  audioBuffer.copyToChannel(float32Data, 0);
+  const actualDuration = audioBuffer.duration;
+  actualDurations[myCnt] = actualDuration;
+  addLog(`\u97F3\u58F0\u30C7\u30FC\u30BF\u9577: \u884C${myCnt} ${actualDuration.toFixed(2)}\u79D2`);
+  sourceNode = audioContext.createBufferSource();
+  sourceNode.buffer = audioBuffer;
+  activePlayingSources.set(myCnt, {
+    startTime: performance.now(),
+    text: ctext,
+    sourceNode
+  });
+  if (activePlayingSources.size > 1) {
+    const activeIndices = Array.from(activePlayingSources.keys()).join(", ");
+    addLog(`\u26A0\uFE0F \u8B66\u544A: \u591A\u91CD\u518D\u751F\u691C\u77E5\uFF01 \u518D\u751F\u4E2D\u306E\u884C: [${activeIndices}]`);
+  }
+  updateConcurrentPlayingDisplay();
+  sourceNode.connect(analyserNode);
+  analyserNode.connect(audioContext.destination);
+  sourceNode.onended = () => {
+    isPlaying = false;
+    activePlayingSources.delete(myCnt);
+    updateConcurrentPlayingDisplay();
+    highlightActiveLine();
+    if (idxForceStop > -1 && idxForceStop !== curPlaying) {
+      EndStatuses(curPlaying - 1);
+      idxForceStop = -1;
+      return;
+    }
+    EndStatuses(curPlaying);
+    addLog(`\u518D\u751F\u5B8C\u4E86: \u884C${curPlaying}`);
+    idxForceStop = -1;
+    if (playbackQueue.length > 0) {
+      const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
+      if (nextIdxPosition >= 0) {
+        playbackQueue.splice(nextIdxPosition, 1);
+        addLog(`\u30AD\u30E5\u30FC\u304B\u3089\u53D6\u308A\u51FA\u3057: \u884C${nextPlayIndex}\u3092${intervalPerLine}\u79D2\u5F8C\u306B\u518D\u751F\u958B\u59CB`);
+        setTimeout(() => {
+          schedulePlayback(nextPlayIndex);
+        }, intervalPerLine * 1e3);
+      } else {
+        addLog(`\u8B66\u544A: \u30AD\u30E5\u30FC\u306B\u6B21\u306E\u884C${nextPlayIndex}\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\uFF08\u30AD\u30E5\u30FC: [${playbackQueue.join(", ")}]\uFF09`);
+      }
+    }
+  };
+  sourceNode.start();
+  playStarts[curPlaying] = audioContext.currentTime;
+}
+drawWaveform();
+var isPause = false;
+var isStop = false;
+document.getElementById("pause").addEventListener("click", () => {
+  if (isPause) {
+    audioContext.resume().then(() => {
+      isPause = false;
+      document.getElementById("pause").innerText = "\u23F8\uFE0F \u4E00\u6642\u505C\u6B62";
+      addLog("\u518D\u958B\u3057\u307E\u3057\u305F");
+    });
+  } else {
+    audioContext.suspend().then(() => {
+      isPause = true;
+      document.getElementById("pause").innerText = "\u25B6\uFE0F \u518D\u958B";
+      addLog("\u4E00\u6642\u505C\u6B62\u3057\u307E\u3057\u305F");
+    });
+  }
+});
+document.getElementById("stop").addEventListener("click", () => {
+  isStop = true;
+  activePlayingSources.forEach((info, idx) => {
+    if (info.sourceNode) {
+      try {
+        info.sourceNode.stop();
+        info.sourceNode.disconnect();
+      } catch (e) {
+        console.error(`\u884C${idx}\u306E\u505C\u6B62\u30A8\u30E9\u30FC:`, e);
+      }
+    }
+  });
+  if (sourceNode) {
+    try {
+      sourceNode.stop();
+    } catch (e) {
+    }
+    try {
+      sourceNode.disconnect();
+    } catch (e) {
+    }
+    isPlaying = false;
+    pendingBytes = new Uint8Array(0);
+    leftover = new Uint8Array(0);
+  }
+  activePlayingSources.clear();
+  updateConcurrentPlayingDisplay();
+  addLog("\u518D\u751F\u3092\u505C\u6B62\u3057\u307E\u3057\u305F");
+});
+document.getElementById("clearLog").addEventListener("click", () => {
+  document.getElementById("logContainer").innerHTML = "";
+});
+async function loadTemplateFiles() {
+  try {
+    const response = await fetch("http://10.2.1.15:19999/listfiles");
+    const data = await response.json();
+    const select = document.getElementById("templateFileSelect");
+    select.innerHTML = '<option value="">-- \u30D5\u30A1\u30A4\u30EB\u3092\u9078\u629E --</option>';
+    data.files.forEach((file) => {
+      if (!file.endsWith(".html")) {
+        const option = document.createElement("option");
+        option.value = file;
+        option.textContent = file;
+        select.appendChild(option);
+      }
+    });
+  } catch (error) {
+    console.error("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u4E00\u89A7\u306E\u8AAD\u307F\u8FBC\u307F\u30A8\u30E9\u30FC:", error);
+  }
+}
+async function loadTemplateFileContent(selectedFile) {
+  if (!selectedFile) return;
+  try {
+    const response = await fetch(`http://10.2.1.15:19999/test?message=${encodeURIComponent(selectedFile)}`);
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const textarea = doc.querySelector("#textInput");
+    if (textarea) {
+      document.getElementById("textInput").value = textarea.textContent || "";
+      addLog(`\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u8AAD\u307F\u8FBC\u307F: ${selectedFile}`);
+      updateTextDisplay();
+    }
+  } catch (error) {
+    console.error("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u8AAD\u307F\u8FBC\u307F\u30A8\u30E9\u30FC:", error);
+    addLog(`\u30A8\u30E9\u30FC: \u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u300C${selectedFile}\u300D\u3092\u8AAD\u307F\u8FBC\u3081\u307E\u305B\u3093`);
+  }
+}
+document.getElementById("templateFileSelect").addEventListener("change", async (e) => {
+  const selectedFile = e.target.value;
+  if (!selectedFile) return;
+  await loadTemplateFileContent(selectedFile);
+});
+window.addEventListener("load", async () => {
+  updateTextDisplay();
+  const urlParams = new URLSearchParams(window.location.search);
+  const startLine = urlParams.get("l");
+  if (startLine !== null) {
+    document.getElementById("startLineNumber").value = startLine;
+    addLog(`\u{1F4CD} \u958B\u59CB\u884C\u756A\u53F7\u3092\u8A2D\u5B9A: ${startLine}`);
+  }
+  const voiceNum = urlParams.get("voiceNumber");
+  if (voiceNum !== null) {
+    document.getElementById("voiceNumber").value = voiceNum;
+    addLog(`\u{1F3A4} \u97F3\u58F0\u756A\u53F7\u3092\u8A2D\u5B9A: ${voiceNum}`);
+  }
+  const speed = urlParams.get("playbackSpeed");
+  if (speed !== null) {
+    document.getElementById("playbackSpeed").value = speed;
+    addLog(`\u23F1\uFE0F \u518D\u751F\u901F\u5EA6\u3092\u8A2D\u5B9A: ${speed}`);
+  }
+  await loadTemplateFiles();
+  const message = urlParams.get("message");
+  if (message !== null) {
+    document.getElementById("templateFileSelect").value = message;
+    addLog(`\u{1F4C4} \u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u3092\u8A2D\u5B9A: ${message}`);
+    await loadTemplateFileContent(message);
+  }
+  document.getElementById("voiceNumber").addEventListener("change", (e) => {
+    addLog(`\u{1F3A4} \u97F3\u58F0\u756A\u53F7\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+  document.getElementById("playbackSpeed").addEventListener("change", (e) => {
+    addLog(`\u23F1\uFE0F \u518D\u751F\u901F\u5EA6\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+  document.getElementById("concurrentRequests").addEventListener("change", (e) => {
+    MAX_CONCURRENT_REQUESTS = parseInt(e.target.value) || 3;
+    addLog(`\u{1F4CA} \u4E26\u884C\u30EA\u30AF\u30A8\u30B9\u30C8\u6570\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+});
+var model = "voicevox-v1";
+var responseFormat = "pcm";
+function getVoiceNumber() {
+  return document.getElementById("voiceNumber").value || "1";
+}
+function getPlaybackSpeed() {
+  return parseFloat(document.getElementById("playbackSpeed").value) || 1;
+}
+var cnt = 0;
+async function processStream(reader, myCnt) {
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (isStop) return;
+      if (done) {
+        if (leftover.length >= 2) {
+          const leftoverUseBytes = leftover.length - leftover.length % 2;
+          if (leftoverUseBytes > 0) {
+            const leftoverChunk = leftover.slice(0, leftoverUseBytes);
+            const newPending = new Uint8Array(pendingBytes.length + leftoverChunk.length);
+            newPending.set(pendingBytes, 0);
+            newPending.set(leftoverChunk, pendingBytes.length);
+            pendingBytes = newPending;
+          }
+        }
+        leftover = new Uint8Array(0);
+        addLog(`\u30C7\u30FC\u30BF\u53D7\u4FE1\u5B8C\u4E86: \u884C${myCnt} (${pendingBytes.length}\u30D0\u30A4\u30C8)`);
+        if (pendingBytes.length > 0) {
+          pendingBytesQueue.push(pendingBytes);
+          statuses[myCnt] = STATUS_PUSHED;
+          updateStatusDisplay();
+          addLog(`\u30AD\u30E5\u30FC\u306B\u8FFD\u52A0: \u884C${myCnt} (\u30AD\u30E5\u30FC\u5185: ${pendingBytesQueue.length})`);
+          schedulePlayback(myCnt);
+          highlightActiveLine();
+        }
+        pendingBytes = new Uint8Array(0);
+        return;
+      }
+      const chunk = value || new Uint8Array(0);
+      const combined = new Uint8Array(leftover.length + chunk.length);
+      combined.set(leftover, 0);
+      combined.set(chunk, leftover.length);
+      leftover = new Uint8Array(0);
+      const useBytes = combined.length - combined.length % 2;
+      if (useBytes > 0) {
+        const validChunk = combined.slice(0, useBytes);
+        const newPending = new Uint8Array(pendingBytes.length + validChunk.length);
+        newPending.set(pendingBytes, 0);
+        newPending.set(validChunk, pendingBytes.length);
+        pendingBytes = newPending;
+      }
+      if (useBytes < combined.length) leftover = combined.slice(useBytes);
+    }
+  } catch (e) {
+    addLog(`\u30B9\u30C8\u30EA\u30FC\u30E0\u51E6\u7406\u4E2D\u306E\u30A8\u30E9\u30FC: \u884C${myCnt} - ${e.message}`);
+    console.error(e);
+  }
+}
+var f = (text) => {
+  return new Promise((resolve) => {
+    playTexts.push(text);
+    const myCnt = cnt++;
+    statuses[myCnt] = STATUS_START;
+    updateStatusDisplay();
+    addLog(`API\u30EA\u30AF\u30A8\u30B9\u30C8\u9001\u4FE1: \u884C${myCnt} "${text.substring(0, 30)}..."`);
+    activeRequests.add(myCnt);
+    fetch("http://10.2.1.15:19999/run2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: text, voice: getVoiceNumber(), speed: getPlaybackSpeed(), response_format: responseFormat })
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
+      addLog(`API\u30EC\u30B9\u30DD\u30F3\u30B9\u53D7\u4FE1: \u884C${myCnt}`);
+      const reader = response.body.getReader();
+      while (myCnt > 0 && statuses[myCnt - 1] < STATUS_PUSHED) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      resolve();
+      await processStream(reader, myCnt);
+    }).catch((error) => {
+      addLog(`\u30A8\u30E9\u30FC: \u884C${myCnt} - ${error.message}`);
+      console.error("\u30A8\u30E9\u30FC:", error);
+    }).finally(() => {
+      activeRequests.delete(myCnt);
+    });
+  });
+};
+function updateTextDisplay() {
+  const textInput = document.getElementById("textInput").value.trim();
+  const texts = textInput.split("\u3002").filter((t) => t.length > 0);
+  const textDisplay = document.getElementById("textDisplay");
+  textDisplay.innerHTML = "";
+  texts.forEach((text, index) => {
+    const span = document.createElement("span");
+    span.id = `text-line-${index}`;
+    span.className = "px-2 py-1 rounded transition-colors";
+    span.textContent = text + "\u3002";
+    textDisplay.appendChild(span);
+    if (index < texts.length - 1) textDisplay.appendChild(document.createTextNode(" "));
+  });
+}
+function highlightActiveLine() {
+  document.querySelectorAll("#textDisplay span").forEach((span) => {
+    span.classList.remove("bg-yellow-300", "font-bold");
+  });
+  Array.from(activePlayingSources.keys()).forEach((idx) => {
+    const span = document.getElementById(`text-line-${idx}`);
+    if (span) span.classList.add("bg-yellow-300", "font-bold");
+  });
+}
+document.getElementById("textInput").addEventListener("change", updateTextDisplay);
+document.getElementById("textInput").addEventListener("input", updateTextDisplay);
+document.getElementById("startButton").addEventListener("click", async () => {
+  const apiKey = document.getElementById("apiKeyInput").value.trim();
+  const textInputVal = document.getElementById("textInput").value.trim();
+  const allTexts = textInputVal.split("\u3002").filter((t) => t.length > 0);
+  if (allTexts.length === 0) {
+    alert("\u30C6\u30AD\u30B9\u30C8\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+    return;
+  }
+  const startLineInput = document.getElementById("startLineNumber");
+  const startLineNumber = Math.max(0, parseInt(startLineInput.value) || 0);
+  if (startLineNumber >= allTexts.length) {
+    alert(`\u958B\u59CB\u884C\u756A\u53F7\u304C\u5927\u304D\u3059\u304E\u307E\u3059\u30020\uFF5E${allTexts.length - 1}\u306E\u7BC4\u56F2\u3067\u6307\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
+    return;
+  }
+  const texts = allTexts.slice(startLineNumber);
+  addLog(`\u958B\u59CB\u884C: ${startLineNumber}\u884C\u76EE\u304B\u3089\uFF08\u5168${texts.length}\u884C\u3092\u51E6\u7406\uFF09`);
+  const concurrentInput = document.getElementById("concurrentRequests");
+  MAX_CONCURRENT_REQUESTS = Math.max(1, Math.min(10, parseInt(concurrentInput.value) || 3));
+  cnt = startLineNumber;
+  nextPlayIndex = startLineNumber;
+  statuses = [];
+  playTexts = [];
+  pendingBytes = new Uint8Array(0);
+  pendingBytesQueue = [];
+  leftover = new Uint8Array(0);
+  isPlaying = false;
+  isStop = false;
+  for (const k in actualDurations) delete actualDurations[Number(k)];
+  activePlayingSources.clear();
+  playbackQueue = [];
+  activeRequests.clear();
+  concurrentPlayDetected = false;
+  updateConcurrentPlayingDisplay();
+  document.getElementById("waitingNotice").classList.add("hidden");
+  updateTextDisplay();
+  addLog(`\u518D\u751F\u958B\u59CB: ${texts.length}\u884C\u306E\u30C6\u30AD\u30B9\u30C8\u3092\u51E6\u7406\u3057\u307E\u3059`);
+  addLog(`\u4E26\u884C\u30EA\u30AF\u30A8\u30B9\u30C8\u6570: ${MAX_CONCURRENT_REQUESTS} \u884C`);
+  document.getElementById("currentText").innerText = texts[0].trim();
+  updateStatusDisplay();
+  try {
+    let currentIndex = 0;
+    while (currentIndex < texts.length) {
+      let availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+      let waitLoggedOnce = false;
+      while (availableSlots <= 0) {
+        if (!waitLoggedOnce) {
+          addLog(`\u23F8\uFE0F \u518D\u751F\u5F85\u3061\u884C\u6570\u304C\u591A\u3044\u305F\u3081\u5F85\u6A5F\u4E2D\uFF08\u5F85\u3061\uFF1A${pendingBytesQueue.length}\u884C\u3001\u6700\u5927\uFF1A${MAX_CONCURRENT_REQUESTS}\u884C\uFF09`);
+          waitLoggedOnce = true;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+      }
+      const batchSize = Math.min(availableSlots, texts.length - currentIndex);
+      const batch = [];
+      for (let i = 0; i < batchSize; i++) batch.push(f(texts[currentIndex + i].trim()));
+      addLog(`\u30D0\u30C3\u30C1\u51E6\u7406: \u884C${currentIndex}\uFF5E${currentIndex + batchSize - 1} (${batchSize}\u884C\u3001\u6709\u52B9\u30B9\u30ED\u30C3\u30C8\uFF1A${availableSlots}/${MAX_CONCURRENT_REQUESTS})`);
+      await Promise.all(batch);
+      currentIndex += batchSize;
+      if (currentIndex < texts.length) await new Promise((r) => setTimeout(r, 200));
+    }
+    addLog("\u3059\u3079\u3066\u306E\u30C6\u30AD\u30B9\u30C8\u306E\u51E6\u7406\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F");
+  } catch (error) {
+    addLog(`\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F: ${error.message}`);
+    console.error("\u30A8\u30E9\u30FC:", error);
+    alert("\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F\u3002\u30B3\u30F3\u30BD\u30FC\u30EB\u3092\u3054\u78BA\u8A8D\u304F\u3060\u3055\u3044\u3002");
+  }
+});
+function generateLineURLAndOpen() {
+  const curLineNum = parseInt(document.getElementById("curIdx").textContent || "0") || 0;
+  const voiceNum = getVoiceNumber();
+  const speed = getPlaybackSpeed();
+  const selectedFile = document.getElementById("templateFileSelect").value;
+  let url = `http://10.2.1.15:19999/test?`;
+  url += `l=${curLineNum}`;
+  if (selectedFile) url += `&message=${encodeURIComponent(selectedFile)}`;
+  url += `&voiceNumber=${encodeURIComponent(voiceNum)}&playbackSpeed=${encodeURIComponent(String(speed))}`;
+  addLog(`\u{1F517} URL\u3092\u958B\u304F: ${url}`);
+  window.open(url, "_blank");
+}
+window.togglePanel = togglePanel;
+window.generateLineURLAndOpen = generateLineURLAndOpen;
+
+</script>
+<script type="module">
+// openai_tts_realtime_t.ts
+function togglePanel(contentId, iconId) {
+  const content = document.getElementById(contentId);
+  const icon = document.getElementById(iconId);
+  if (content.style.display === "none") {
+    content.style.display = "";
+    icon.textContent = "\u25BC";
+    icon.style.transform = "rotate(0deg)";
+  } else {
+    content.style.display = "none";
+    icon.textContent = "\u25B6";
+    icon.style.transform = "rotate(-90deg)";
+  }
+}
+function addLog(message) {
+  const logContainer = document.getElementById("logContainer");
+  const timestamp = (/* @__PURE__ */ new Date()).toLocaleTimeString("ja-JP");
+  const logEntry = document.createElement("div");
+  logEntry.textContent = `[${timestamp}] ${message}`;
+  logContainer.appendChild(logEntry);
+  logContainer.scrollTop = logContainer.scrollHeight;
+}
+var audioContext = new (window.AudioContext || window.webkitAudioContext)({
+  sampleRate: 24e3
+});
+var pendingBytes = new Uint8Array(0);
+var pendingBytesQueue = [];
+var leftover = new Uint8Array(0);
+var isPlaying = false;
+var sourceNode = null;
+var idxForceStop = -1;
+var nextPlayIndex = 0;
+var activePlayingSources = /* @__PURE__ */ new Map();
+var concurrentPlayDetected = false;
+var playbackQueue = [];
+var MAX_CONCURRENT_REQUESTS = 3;
+var activeRequests = /* @__PURE__ */ new Set();
+async function waitForPreviousPlayback(myCnt) {
+  const waitingNotice = document.getElementById("waitingNotice");
+  const waitingInfo = document.getElementById("waitingInfo");
+  let hasLogged = false;
+  while (activePlayingSources.size > 0) {
+    const otherPlaying = Array.from(activePlayingSources.keys()).filter((idx) => idx !== myCnt);
+    if (otherPlaying.length === 0) break;
+    waitingNotice.classList.remove("hidden");
+    waitingInfo.textContent = `\u884C${myCnt}\u304C\u5F85\u6A5F\u4E2D (\u518D\u751F\u4E2D: [${otherPlaying.join(", ")}])`;
+    if (!hasLogged) {
+      addLog(`\u884C${myCnt}: \u4ED6\u306E\u97F3\u58F0\u304C\u518D\u751F\u4E2D\u306E\u305F\u3081\u5F85\u6A5F... (\u518D\u751F\u4E2D: [${otherPlaying.join(", ")}])`);
+      hasLogged = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  waitingNotice.classList.add("hidden");
+}
+var analyserNode = audioContext.createAnalyser();
+analyserNode.fftSize = 1024;
+var dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+var waveCanvas = document.getElementById("waveCanvas");
+var waveCtx = waveCanvas.getContext("2d");
+var playTimeout = 15 * 1e3;
+var intervalPerLine = 1;
+var actualDurations = {};
+function drawWaveform() {
+  requestAnimationFrame(drawWaveform);
+  waveCtx.fillStyle = "#667eea";
+  waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+  analyserNode.getByteTimeDomainData(dataArray);
+  waveCtx.lineWidth = 2;
+  waveCtx.strokeStyle = "#fff";
+  waveCtx.beginPath();
+  const sliceWidth = waveCanvas.width * 1 / dataArray.length;
+  let x = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    const v = dataArray[i] / 128;
+    const y = v * waveCanvas.height / 2;
+    if (i === 0) waveCtx.moveTo(x, y);
+    else waveCtx.lineTo(x, y);
+    x += sliceWidth;
+  }
+  waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+  waveCtx.stroke();
+}
+var playTexts = [];
+var playStart = performance.now();
+var statuses = [];
+var playStarts = [];
+var STATUS_START = 0;
+var STATUS_PUSHED = 1;
+var STATUS_END = 2;
+var curPlaying = 0;
+function updateStatusDisplay() {
+  const container = document.getElementById("statusContainer");
+  container.innerHTML = "";
+  const activeItems = [];
+  for (let i = 0; i < statuses.length; i++) {
+    if (statuses[i] !== STATUS_END && !activePlayingSources.has(i) && i > curPlaying) {
+      activeItems.push(i);
+    }
+  }
+  const displayItems = activeItems.slice(Math.max(0, activeItems.length - 5));
+  for (const i of displayItems) {
+    const statusText = ["\u6E96\u5099\u4E2D", "\u518D\u751F\u5F85\u3061", "\u5B8C\u4E86"][statuses[i]] || "\u4E0D\u660E";
+    const statusClass = ["status-start", "status-pushed", "status-end"][statuses[i]] || "status-start";
+    const div = document.createElement("div");
+    div.className = `text-xs truncate`;
+    div.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span> \u884C${i}`;
+    container.appendChild(div);
+  }
+  updateBufferStatus();
+}
+function updateBufferStatus() {
+  const requesting = document.getElementById("requestingCount");
+  const queued = document.getElementById("queuedCount");
+  requesting.textContent = String(activeRequests.size);
+  queued.textContent = String(pendingBytesQueue.length);
+}
+function updateConcurrentPlayingDisplay() {
+  const playingList = document.getElementById("playingList");
+  const warningDiv = document.getElementById("concurrentWarning");
+  const countSpan = document.getElementById("concurrentCount");
+  if (activePlayingSources.size === 0) {
+    playingList.innerHTML = '<p class="text-gray-500">\u306A\u3057</p>';
+    warningDiv.classList.add("hidden");
+    concurrentPlayDetected = false;
+  } else {
+    playingList.innerHTML = "";
+    const entries = Array.from(activePlayingSources.entries());
+    entries.forEach(([idx, info]) => {
+      const div = document.createElement("div");
+      const elapsed = (performance.now() - info.startTime) / 1e3;
+      const isConcurrent = activePlayingSources.size > 1;
+      div.className = `p-2 rounded ${isConcurrent ? "bg-red-100 border border-red-300" : "bg-blue-100"}`;
+      div.innerHTML = `
+        <div class="font-bold ${isConcurrent ? "text-red-700" : "text-blue-700"}">
+          ${isConcurrent ? "\u26A0\uFE0F " : "\u25B6\uFE0F "}\u884C${idx}
+        </div>
+        <div class="text-xs text-gray-600 truncate">${info.text.substring(0, 30)}...</div>
+        <div class="text-xs text-gray-500">\u7D4C\u904E: ${elapsed.toFixed(1)}\u79D2</div>
+      `;
+      playingList.appendChild(div);
+    });
+    if (activePlayingSources.size > 1) {
+      warningDiv.classList.remove("hidden");
+      countSpan.textContent = `${activePlayingSources.size}\u500B\u306E\u97F3\u58F0\u304C\u540C\u6642\u518D\u751F\u4E2D`;
+      if (!concurrentPlayDetected) {
+        concurrentPlayDetected = true;
+        addLog(`\u26A0\uFE0F \u591A\u91CD\u518D\u751F\u691C\u77E5: ${activePlayingSources.size}\u500B\u306E\u97F3\u58F0\u304C\u540C\u6642\u518D\u751F\u3055\u308C\u3066\u3044\u307E\u3059`);
+      }
+    } else {
+      warningDiv.classList.add("hidden");
+      concurrentPlayDetected = false;
+    }
+  }
+}
+function updateTimerDisplay() {
+  const elapsedElem = document.getElementById("elapsedTime");
+  const remainingElem = document.getElementById("remainingTime");
+  if (curPlaying < 0 || !playStarts[curPlaying]) {
+    elapsedElem.textContent = "0.0";
+    remainingElem.textContent = "0.0";
+    updateBufferStatus();
+    return;
+  }
+  if (isPlaying && sourceNode && sourceNode.buffer) {
+    const elapsed = audioContext.currentTime - playStarts[curPlaying];
+    const remaining = sourceNode.buffer.duration - elapsed;
+    elapsedElem.textContent = elapsed.toFixed(1);
+    remainingElem.textContent = Math.max(0, remaining).toFixed(1);
+  }
+  updateConcurrentPlayingDisplay();
+  updateBufferStatus();
+}
+setInterval(updateTimerDisplay, 100);
+function EndStatuses(cur) {
+  if (cur - 5 < 0) return;
+  for (let i = Math.max(0, cur - 5); i <= cur; i++) {
+    if (statuses[i] !== STATUS_END) statuses[i] = STATUS_END;
+  }
+  updateStatusDisplay();
+}
+function getRemainingTime(myCnt) {
+  if (actualDurations[myCnt] !== void 0) {
+    return actualDurations[myCnt] * 1e3 + 500;
+  }
+  if (sourceNode == null) return playTimeout;
+  const totalDuration = sourceNode.buffer.duration + intervalPerLine;
+  return Math.max(playTimeout, totalDuration * 1e3);
+}
+async function schedulePlayback(myCnt) {
+  if (myCnt !== nextPlayIndex) {
+    playbackQueue.push(myCnt);
+    addLog(`\u884C${myCnt}: \u30AD\u30E5\u30FC\u306B\u767B\u9332\uFF08\u6B21\u306F${nextPlayIndex}\u3092\u5F85\u6A5F\uFF09`);
+    return;
+  }
+  if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
+    isPlaying = false;
+    EndStatuses(curPlaying);
+    idxForceStop = curPlaying;
+    addLog(`\u5F37\u5236\u505C\u6B62: ${curPlaying} (\u30BF\u30A4\u30E0\u30A2\u30A6\u30C8)`);
+    console.log("force stop: ", curPlaying);
+    return;
+  }
+  if (activePlayingSources.size > 0) {
+    const waitingFor = Array.from(activePlayingSources.keys());
+    addLog(`\u884C${myCnt}: \u5F85\u6A5F\u958B\u59CB (\u518D\u751F\u4E2D: [${waitingFor.join(", ")}])`);
+    await waitForPreviousPlayback(myCnt);
+    addLog(`\u884C${myCnt}: \u5F85\u6A5F\u7D42\u4E86\u3001\u518D\u751F\u3092\u958B\u59CB\u3057\u307E\u3059`);
+  }
+  if (isPlaying) {
+    addLog(`\u884C${myCnt}: \u65E2\u306B\u4ED6\u306E\u97F3\u58F0\u304C\u518D\u751F\u4E2D\u306E\u305F\u3081\u30B9\u30AD\u30C3\u30D7`);
+    return;
+  }
+  if (pendingBytesQueue.length === 0) {
+    addLog(`\u884C${myCnt}: \u30AD\u30E5\u30FC\u304C\u7A7A\u306E\u305F\u3081\u518D\u751F\u3067\u304D\u307E\u305B\u3093`);
+    return;
+  }
+  if (playTexts.length === 0) {
+    addLog(`\u884C${myCnt}: \u30C6\u30AD\u30B9\u30C8\u304C\u7A7A\u306E\u305F\u3081\u518D\u751F\u3067\u304D\u307E\u305B\u3093`);
+    return;
+  }
+  curPlaying = myCnt;
+  isPlaying = true;
+  nextPlayIndex++;
+  playStart = performance.now();
+  const ctext = playTexts.shift();
+  document.getElementById("prevText").innerText = document.getElementById("currentText").innerText;
+  document.getElementById("currentText").innerText = ctext;
+  document.getElementById("curIdx").innerText = String(curPlaying);
+  addLog(`\u518D\u751F\u958B\u59CB: \u884C${curPlaying} "${ctext.substring(0, 20)}..."`);
+  const dataToPlay = pendingBytesQueue.shift();
+  const int16Data = new Int16Array(dataToPlay.buffer);
+  const float32Data = new Float32Array(int16Data.length);
+  for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768;
+  const fadeLength = Math.min(480, Math.floor(float32Data.length * 0.02));
+  for (let i = 0; i < fadeLength; i++) {
+    const fadeMultiplier = i / fadeLength;
+    float32Data[i] *= fadeMultiplier;
+  }
+  for (let i = 0; i < fadeLength; i++) {
+    const fadeMultiplier = i / fadeLength;
+    float32Data[float32Data.length - 1 - i] *= fadeMultiplier;
+  }
+  const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
+  audioBuffer.copyToChannel(float32Data, 0);
+  const actualDuration = audioBuffer.duration;
+  actualDurations[myCnt] = actualDuration;
+  addLog(`\u97F3\u58F0\u30C7\u30FC\u30BF\u9577: \u884C${myCnt} ${actualDuration.toFixed(2)}\u79D2`);
+  sourceNode = audioContext.createBufferSource();
+  sourceNode.buffer = audioBuffer;
+  activePlayingSources.set(myCnt, {
+    startTime: performance.now(),
+    text: ctext,
+    sourceNode
+  });
+  if (activePlayingSources.size > 1) {
+    const activeIndices = Array.from(activePlayingSources.keys()).join(", ");
+    addLog(`\u26A0\uFE0F \u8B66\u544A: \u591A\u91CD\u518D\u751F\u691C\u77E5\uFF01 \u518D\u751F\u4E2D\u306E\u884C: [${activeIndices}]`);
+  }
+  updateConcurrentPlayingDisplay();
+  sourceNode.connect(analyserNode);
+  analyserNode.connect(audioContext.destination);
+  sourceNode.onended = () => {
+    isPlaying = false;
+    activePlayingSources.delete(myCnt);
+    updateConcurrentPlayingDisplay();
+    highlightActiveLine();
+    if (idxForceStop > -1 && idxForceStop !== curPlaying) {
+      EndStatuses(curPlaying - 1);
+      idxForceStop = -1;
+      return;
+    }
+    EndStatuses(curPlaying);
+    addLog(`\u518D\u751F\u5B8C\u4E86: \u884C${curPlaying}`);
+    idxForceStop = -1;
+    if (playbackQueue.length > 0) {
+      const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
+      if (nextIdxPosition >= 0) {
+        playbackQueue.splice(nextIdxPosition, 1);
+        addLog(`\u30AD\u30E5\u30FC\u304B\u3089\u53D6\u308A\u51FA\u3057: \u884C${nextPlayIndex}\u3092${intervalPerLine}\u79D2\u5F8C\u306B\u518D\u751F\u958B\u59CB`);
+        setTimeout(() => {
+          schedulePlayback(nextPlayIndex);
+        }, intervalPerLine * 1e3);
+      } else {
+        addLog(`\u8B66\u544A: \u30AD\u30E5\u30FC\u306B\u6B21\u306E\u884C${nextPlayIndex}\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\uFF08\u30AD\u30E5\u30FC: [${playbackQueue.join(", ")}]\uFF09`);
+      }
+    }
+  };
+  sourceNode.start();
+  playStarts[curPlaying] = audioContext.currentTime;
+}
+drawWaveform();
+var isPause = false;
+var isStop = false;
+document.getElementById("pause").addEventListener("click", () => {
+  if (isPause) {
+    audioContext.resume().then(() => {
+      isPause = false;
+      document.getElementById("pause").innerText = "\u23F8\uFE0F \u4E00\u6642\u505C\u6B62";
+      addLog("\u518D\u958B\u3057\u307E\u3057\u305F");
+    });
+  } else {
+    audioContext.suspend().then(() => {
+      isPause = true;
+      document.getElementById("pause").innerText = "\u25B6\uFE0F \u518D\u958B";
+      addLog("\u4E00\u6642\u505C\u6B62\u3057\u307E\u3057\u305F");
+    });
+  }
+});
+document.getElementById("stop").addEventListener("click", () => {
+  isStop = true;
+  activePlayingSources.forEach((info, idx) => {
+    if (info.sourceNode) {
+      try {
+        info.sourceNode.stop();
+        info.sourceNode.disconnect();
+      } catch (e) {
+        console.error(`\u884C${idx}\u306E\u505C\u6B62\u30A8\u30E9\u30FC:`, e);
+      }
+    }
+  });
+  if (sourceNode) {
+    try {
+      sourceNode.stop();
+    } catch (e) {
+    }
+    try {
+      sourceNode.disconnect();
+    } catch (e) {
+    }
+    isPlaying = false;
+    pendingBytes = new Uint8Array(0);
+    leftover = new Uint8Array(0);
+  }
+  activePlayingSources.clear();
+  updateConcurrentPlayingDisplay();
+  addLog("\u518D\u751F\u3092\u505C\u6B62\u3057\u307E\u3057\u305F");
+});
+document.getElementById("clearLog").addEventListener("click", () => {
+  document.getElementById("logContainer").innerHTML = "";
+});
+async function loadTemplateFiles() {
+  try {
+    const response = await fetch("http://10.2.1.15:19999/listfiles");
+    const data = await response.json();
+    const select = document.getElementById("templateFileSelect");
+    select.innerHTML = '<option value="">-- \u30D5\u30A1\u30A4\u30EB\u3092\u9078\u629E --</option>';
+    data.files.forEach((file) => {
+      if (!file.endsWith(".html")) {
+        const option = document.createElement("option");
+        option.value = file;
+        option.textContent = file;
+        select.appendChild(option);
+      }
+    });
+  } catch (error) {
+    console.error("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u4E00\u89A7\u306E\u8AAD\u307F\u8FBC\u307F\u30A8\u30E9\u30FC:", error);
+  }
+}
+async function loadTemplateFileContent(selectedFile) {
+  if (!selectedFile) return;
+  try {
+    const response = await fetch(`http://10.2.1.15:19999/test?message=${encodeURIComponent(selectedFile)}`);
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const textarea = doc.querySelector("#textInput");
+    if (textarea) {
+      document.getElementById("textInput").value = textarea.textContent || "";
+      addLog(`\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u8AAD\u307F\u8FBC\u307F: ${selectedFile}`);
+      updateTextDisplay();
+    }
+  } catch (error) {
+    console.error("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u8AAD\u307F\u8FBC\u307F\u30A8\u30E9\u30FC:", error);
+    addLog(`\u30A8\u30E9\u30FC: \u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u300C${selectedFile}\u300D\u3092\u8AAD\u307F\u8FBC\u3081\u307E\u305B\u3093`);
+  }
+}
+document.getElementById("templateFileSelect").addEventListener("change", async (e) => {
+  const selectedFile = e.target.value;
+  if (!selectedFile) return;
+  await loadTemplateFileContent(selectedFile);
+});
+window.addEventListener("load", async () => {
+  updateTextDisplay();
+  const urlParams = new URLSearchParams(window.location.search);
+  const startLine = urlParams.get("l");
+  if (startLine !== null) {
+    document.getElementById("startLineNumber").value = startLine;
+    addLog(`\u{1F4CD} \u958B\u59CB\u884C\u756A\u53F7\u3092\u8A2D\u5B9A: ${startLine}`);
+  }
+  const voiceNum = urlParams.get("voiceNumber");
+  if (voiceNum !== null) {
+    document.getElementById("voiceNumber").value = voiceNum;
+    addLog(`\u{1F3A4} \u97F3\u58F0\u756A\u53F7\u3092\u8A2D\u5B9A: ${voiceNum}`);
+  }
+  const speed = urlParams.get("playbackSpeed");
+  if (speed !== null) {
+    document.getElementById("playbackSpeed").value = speed;
+    addLog(`\u23F1\uFE0F \u518D\u751F\u901F\u5EA6\u3092\u8A2D\u5B9A: ${speed}`);
+  }
+  await loadTemplateFiles();
+  const message = urlParams.get("message");
+  if (message !== null) {
+    document.getElementById("templateFileSelect").value = message;
+    addLog(`\u{1F4C4} \u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u3092\u8A2D\u5B9A: ${message}`);
+    await loadTemplateFileContent(message);
+  }
+  document.getElementById("voiceNumber").addEventListener("change", (e) => {
+    addLog(`\u{1F3A4} \u97F3\u58F0\u756A\u53F7\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+  document.getElementById("playbackSpeed").addEventListener("change", (e) => {
+    addLog(`\u23F1\uFE0F \u518D\u751F\u901F\u5EA6\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+  document.getElementById("concurrentRequests").addEventListener("change", (e) => {
+    MAX_CONCURRENT_REQUESTS = parseInt(e.target.value) || 3;
+    addLog(`\u{1F4CA} \u4E26\u884C\u30EA\u30AF\u30A8\u30B9\u30C8\u6570\u3092\u5909\u66F4: ${e.target.value}`);
+  });
+});
+var model = "voicevox-v1";
+var responseFormat = "pcm";
+function getVoiceNumber() {
+  return document.getElementById("voiceNumber").value || "1";
+}
+function getPlaybackSpeed() {
+  return parseFloat(document.getElementById("playbackSpeed").value) || 1;
+}
+var cnt = 0;
+async function processStream(reader, myCnt) {
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (isStop) return;
+      if (done) {
+        if (leftover.length >= 2) {
+          const leftoverUseBytes = leftover.length - leftover.length % 2;
+          if (leftoverUseBytes > 0) {
+            const leftoverChunk = leftover.slice(0, leftoverUseBytes);
+            const newPending = new Uint8Array(pendingBytes.length + leftoverChunk.length);
+            newPending.set(pendingBytes, 0);
+            newPending.set(leftoverChunk, pendingBytes.length);
+            pendingBytes = newPending;
+          }
+        }
+        leftover = new Uint8Array(0);
+        addLog(`\u30C7\u30FC\u30BF\u53D7\u4FE1\u5B8C\u4E86: \u884C${myCnt} (${pendingBytes.length}\u30D0\u30A4\u30C8)`);
+        if (pendingBytes.length > 0) {
+          pendingBytesQueue.push(pendingBytes);
+          statuses[myCnt] = STATUS_PUSHED;
+          updateStatusDisplay();
+          addLog(`\u30AD\u30E5\u30FC\u306B\u8FFD\u52A0: \u884C${myCnt} (\u30AD\u30E5\u30FC\u5185: ${pendingBytesQueue.length})`);
+          schedulePlayback(myCnt);
+          highlightActiveLine();
+        }
+        pendingBytes = new Uint8Array(0);
+        return;
+      }
+      const chunk = value || new Uint8Array(0);
+      const combined = new Uint8Array(leftover.length + chunk.length);
+      combined.set(leftover, 0);
+      combined.set(chunk, leftover.length);
+      leftover = new Uint8Array(0);
+      const useBytes = combined.length - combined.length % 2;
+      if (useBytes > 0) {
+        const validChunk = combined.slice(0, useBytes);
+        const newPending = new Uint8Array(pendingBytes.length + validChunk.length);
+        newPending.set(pendingBytes, 0);
+        newPending.set(validChunk, pendingBytes.length);
+        pendingBytes = newPending;
+      }
+      if (useBytes < combined.length) leftover = combined.slice(useBytes);
+    }
+  } catch (e) {
+    addLog(`\u30B9\u30C8\u30EA\u30FC\u30E0\u51E6\u7406\u4E2D\u306E\u30A8\u30E9\u30FC: \u884C${myCnt} - ${e.message}`);
+    console.error(e);
+  }
+}
+var f = (text) => {
+  return new Promise((resolve) => {
+    playTexts.push(text);
+    const myCnt = cnt++;
+    statuses[myCnt] = STATUS_START;
+    updateStatusDisplay();
+    addLog(`API\u30EA\u30AF\u30A8\u30B9\u30C8\u9001\u4FE1: \u884C${myCnt} "${text.substring(0, 30)}..."`);
+    activeRequests.add(myCnt);
+    fetch("http://10.2.1.15:19999/run2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: text, voice: getVoiceNumber(), speed: getPlaybackSpeed(), response_format: responseFormat })
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
+      addLog(`API\u30EC\u30B9\u30DD\u30F3\u30B9\u53D7\u4FE1: \u884C${myCnt}`);
+      const reader = response.body.getReader();
+      while (myCnt > 0 && statuses[myCnt - 1] < STATUS_PUSHED) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      resolve();
+      await processStream(reader, myCnt);
+    }).catch((error) => {
+      addLog(`\u30A8\u30E9\u30FC: \u884C${myCnt} - ${error.message}`);
+      console.error("\u30A8\u30E9\u30FC:", error);
+    }).finally(() => {
+      activeRequests.delete(myCnt);
+    });
+  });
+};
+function updateTextDisplay() {
+  const textInput = document.getElementById("textInput").value.trim();
+  const texts = textInput.split("\u3002").filter((t) => t.length > 0);
+  const textDisplay = document.getElementById("textDisplay");
+  textDisplay.innerHTML = "";
+  texts.forEach((text, index) => {
+    const span = document.createElement("span");
+    span.id = `text-line-${index}`;
+    span.className = "px-2 py-1 rounded transition-colors";
+    span.textContent = text + "\u3002";
+    textDisplay.appendChild(span);
+    if (index < texts.length - 1) textDisplay.appendChild(document.createTextNode(" "));
+  });
+}
+function highlightActiveLine() {
+  document.querySelectorAll("#textDisplay span").forEach((span) => {
+    span.classList.remove("bg-yellow-300", "font-bold");
+  });
+  Array.from(activePlayingSources.keys()).forEach((idx) => {
+    const span = document.getElementById(`text-line-${idx}`);
+    if (span) span.classList.add("bg-yellow-300", "font-bold");
+  });
+}
+document.getElementById("textInput").addEventListener("change", updateTextDisplay);
+document.getElementById("textInput").addEventListener("input", updateTextDisplay);
+document.getElementById("startButton").addEventListener("click", async () => {
+  const apiKey = document.getElementById("apiKeyInput").value.trim();
+  const textInputVal = document.getElementById("textInput").value.trim();
+  const allTexts = textInputVal.split("\u3002").filter((t) => t.length > 0);
+  if (allTexts.length === 0) {
+    alert("\u30C6\u30AD\u30B9\u30C8\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+    return;
+  }
+  const startLineInput = document.getElementById("startLineNumber");
+  const startLineNumber = Math.max(0, parseInt(startLineInput.value) || 0);
+  if (startLineNumber >= allTexts.length) {
+    alert(`\u958B\u59CB\u884C\u756A\u53F7\u304C\u5927\u304D\u3059\u304E\u307E\u3059\u30020\uFF5E${allTexts.length - 1}\u306E\u7BC4\u56F2\u3067\u6307\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
+    return;
+  }
+  const texts = allTexts.slice(startLineNumber);
+  addLog(`\u958B\u59CB\u884C: ${startLineNumber}\u884C\u76EE\u304B\u3089\uFF08\u5168${texts.length}\u884C\u3092\u51E6\u7406\uFF09`);
+  const concurrentInput = document.getElementById("concurrentRequests");
+  MAX_CONCURRENT_REQUESTS = Math.max(1, Math.min(10, parseInt(concurrentInput.value) || 3));
+  cnt = startLineNumber;
+  nextPlayIndex = startLineNumber;
+  statuses = [];
+  playTexts = [];
+  pendingBytes = new Uint8Array(0);
+  pendingBytesQueue = [];
+  leftover = new Uint8Array(0);
+  isPlaying = false;
+  isStop = false;
+  for (const k in actualDurations) delete actualDurations[Number(k)];
+  activePlayingSources.clear();
+  playbackQueue = [];
+  activeRequests.clear();
+  concurrentPlayDetected = false;
+  updateConcurrentPlayingDisplay();
+  document.getElementById("waitingNotice").classList.add("hidden");
+  updateTextDisplay();
+  addLog(`\u518D\u751F\u958B\u59CB: ${texts.length}\u884C\u306E\u30C6\u30AD\u30B9\u30C8\u3092\u51E6\u7406\u3057\u307E\u3059`);
+  addLog(`\u4E26\u884C\u30EA\u30AF\u30A8\u30B9\u30C8\u6570: ${MAX_CONCURRENT_REQUESTS} \u884C`);
+  document.getElementById("currentText").innerText = texts[0].trim();
+  updateStatusDisplay();
+  try {
+    let currentIndex = 0;
+    while (currentIndex < texts.length) {
+      let availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+      let waitLoggedOnce = false;
+      while (availableSlots <= 0) {
+        if (!waitLoggedOnce) {
+          addLog(`\u23F8\uFE0F \u518D\u751F\u5F85\u3061\u884C\u6570\u304C\u591A\u3044\u305F\u3081\u5F85\u6A5F\u4E2D\uFF08\u5F85\u3061\uFF1A${pendingBytesQueue.length}\u884C\u3001\u6700\u5927\uFF1A${MAX_CONCURRENT_REQUESTS}\u884C\uFF09`);
+          waitLoggedOnce = true;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        availableSlots = MAX_CONCURRENT_REQUESTS - pendingBytesQueue.length;
+      }
+      const batchSize = Math.min(availableSlots, texts.length - currentIndex);
+      const batch = [];
+      for (let i = 0; i < batchSize; i++) batch.push(f(texts[currentIndex + i].trim()));
+      addLog(`\u30D0\u30C3\u30C1\u51E6\u7406: \u884C${currentIndex}\uFF5E${currentIndex + batchSize - 1} (${batchSize}\u884C\u3001\u6709\u52B9\u30B9\u30ED\u30C3\u30C8\uFF1A${availableSlots}/${MAX_CONCURRENT_REQUESTS})`);
+      await Promise.all(batch);
+      currentIndex += batchSize;
+      if (currentIndex < texts.length) await new Promise((r) => setTimeout(r, 200));
+    }
+    addLog("\u3059\u3079\u3066\u306E\u30C6\u30AD\u30B9\u30C8\u306E\u51E6\u7406\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F");
+  } catch (error) {
+    addLog(`\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F: ${error.message}`);
+    console.error("\u30A8\u30E9\u30FC:", error);
+    alert("\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F\u3002\u30B3\u30F3\u30BD\u30FC\u30EB\u3092\u3054\u78BA\u8A8D\u304F\u3060\u3055\u3044\u3002");
+  }
+});
+function generateLineURLAndOpen() {
+  const curLineNum = parseInt(document.getElementById("curIdx").textContent || "0") || 0;
+  const voiceNum = getVoiceNumber();
+  const speed = getPlaybackSpeed();
+  const selectedFile = document.getElementById("templateFileSelect").value;
+  let url = `http://10.2.1.15:19999/test?`;
+  url += `l=${curLineNum}`;
+  if (selectedFile) url += `&message=${encodeURIComponent(selectedFile)}`;
+  url += `&voiceNumber=${encodeURIComponent(voiceNum)}&playbackSpeed=${encodeURIComponent(String(speed))}`;
+  addLog(`\u{1F517} URL\u3092\u958B\u304F: ${url}`);
+  window.open(url, "_blank");
+}
+window.togglePanel = togglePanel;
+window.generateLineURLAndOpen = generateLineURLAndOpen;
+
+</script>
+</body>
+</html>

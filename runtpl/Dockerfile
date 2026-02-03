@@ -30,8 +30,9 @@ COPY --from=builder /build/runtpl/runtpl .
 # テンプレートファイルディレクトリを作成
 RUN mkdir -p tmpl
 
-# HTML ファイルをコピー
-COPY runtpl/openai_tts_realtime.html tmpl/
+# HTML/JS ファイルをコピー
+COPY runtpl/openai_tts_realtime_t.html tmpl/
+COPY runtpl/openai_tts_realtime_t.js tmpl/
 
 # ポート19999を公開
 EXPOSE 19999
