@@ -133,6 +133,13 @@ const STATUS_END = 2;
 
 let curPlaying = 0;
 
+// 再生開始の競合を防ぐためのロック
+let playbackStarting = false;
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ========== ステータス更新表示 ==========
 function updateStatusDisplay(): void {
   const container = document.getElementById('statusContainer') as HTMLElement;
@@ -228,7 +235,7 @@ function updateTimerDisplay(): void {
   updateBufferStatus();
 }
 
-setInterval(updateTimerDisplay, 100);
+// タイマーループは initRuntime() 内で一度だけ開始する
 
 function EndStatuses(cur: number): void {
   if (cur - 5 < 0) return;
@@ -247,184 +254,260 @@ function getRemainingTime(myCnt: number): number {
   return Math.max(playTimeout, totalDuration * 1000);
 }
 
-// 再生をスケジューリングする関数
+// 再生をスケジューリングする関数（ロック付き）
 async function schedulePlayback(myCnt: number): Promise<void> {
-  if (myCnt !== nextPlayIndex) {
-    playbackQueue.push(myCnt);
-    addLog(`行${myCnt}: キューに登録（次は${nextPlayIndex}を待機）`);
-    return;
-  }
+  // シリアライズ：他の開始処理と競合しないようにする
+  while (playbackStarting) await sleep(5);
+  playbackStarting = true;
 
-  if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
-    isPlaying = false;
-    EndStatuses(curPlaying);
-    idxForceStop = curPlaying;
-    addLog(`強制停止: ${curPlaying} (タイムアウト)`);
-    console.log('force stop: ', curPlaying);
-    return;
-  }
-
-  if (activePlayingSources.size > 0) {
-    const waitingFor = Array.from(activePlayingSources.keys());
-    addLog(`行${myCnt}: 待機開始 (再生中: [${waitingFor.join(', ')}])`);
-    await waitForPreviousPlayback(myCnt);
-    addLog(`行${myCnt}: 待機終了、再生を開始します`);
-  }
-
-  if (isPlaying) {
-    addLog(`行${myCnt}: 既に他の音声が再生中のためスキップ`);
-    return;
-  }
-
-  if (pendingBytesQueue.length === 0) {
-    addLog(`行${myCnt}: キューが空のため再生できません`);
-    return;
-  }
-
-  if (playTexts.length === 0) {
-    addLog(`行${myCnt}: テキストが空のため再生できません`);
-    return;
-  }
-
-  curPlaying = myCnt;
-  isPlaying = true;
-  nextPlayIndex++;
-
-  playStart = performance.now();
-  const ctext = playTexts.shift()!;
-  (document.getElementById('prevText') as HTMLElement).innerText = (document.getElementById('currentText') as HTMLElement).innerText;
-  (document.getElementById('currentText') as HTMLElement).innerText = ctext;
-  (document.getElementById('curIdx') as HTMLElement).innerText = String(curPlaying);
-
-  addLog(`再生開始: 行${curPlaying} "${ctext.substring(0, 20)}..."`);
-
-  const dataToPlay = pendingBytesQueue.shift()!;
-
-  const int16Data = new Int16Array(dataToPlay.buffer);
-  const float32Data = new Float32Array(int16Data.length);
-  for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768.0;
-
-  const fadeLength = Math.min(480, Math.floor(float32Data.length * 0.02));
-  for (let i = 0; i < fadeLength; i++) {
-    const fadeMultiplier = i / fadeLength;
-    float32Data[i] *= fadeMultiplier;
-  }
-  for (let i = 0; i < fadeLength; i++) {
-    const fadeMultiplier = i / fadeLength;
-    float32Data[float32Data.length - 1 - i] *= fadeMultiplier;
-  }
-
-  const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
-  audioBuffer.copyToChannel(float32Data, 0);
-
-  const actualDuration = audioBuffer.duration;
-  actualDurations[myCnt] = actualDuration;
-  addLog(`音声データ長: 行${myCnt} ${actualDuration.toFixed(2)}秒`);
-
-  sourceNode = audioContext.createBufferSource();
-  sourceNode.buffer = audioBuffer;
-
-  activePlayingSources.set(myCnt, {
-    startTime: performance.now(),
-    text: ctext,
-    sourceNode
-  });
-
-  if (activePlayingSources.size > 1) {
-    const activeIndices = Array.from(activePlayingSources.keys()).join(', ');
-    addLog(`⚠️ 警告: 多重再生検知！ 再生中の行: [${activeIndices}]`);
-  }
-
-  updateConcurrentPlayingDisplay();
-
-  sourceNode.connect(analyserNode);
-  analyserNode.connect(audioContext.destination);
-
-  sourceNode.onended = () => {
-    isPlaying = false;
-    activePlayingSources.delete(myCnt);
-    updateConcurrentPlayingDisplay();
-    highlightActiveLine();
-
-    if (idxForceStop > -1 && idxForceStop !== curPlaying) {
-      EndStatuses(curPlaying - 1);
-      idxForceStop = -1;
+  try {
+    if (myCnt !== nextPlayIndex) {
+      playbackQueue.push(myCnt);
+      addLog(`行${myCnt}: キューに登録（次は${nextPlayIndex}を待機）`);
       return;
     }
-    EndStatuses(curPlaying);
-    addLog(`再生完了: 行${curPlaying}`);
-    idxForceStop = -1;
 
-    if (playbackQueue.length > 0) {
-      const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
-      if (nextIdxPosition >= 0) {
-        playbackQueue.splice(nextIdxPosition, 1);
-        addLog(`キューから取り出し: 行${nextPlayIndex}を${intervalPerLine}秒後に再生開始`);
-        setTimeout(() => {
-          schedulePlayback(nextPlayIndex);
-        }, intervalPerLine * 1000);
-      } else {
-        addLog(`警告: キューに次の行${nextPlayIndex}が見つかりません（キュー: [${playbackQueue.join(', ')}]）`);
-      }
+    if (isPlaying && performance.now() - playStart > getRemainingTime(myCnt)) {
+      isPlaying = false;
+      EndStatuses(curPlaying);
+      idxForceStop = curPlaying;
+      addLog(`強制停止: ${curPlaying} (タイムアウト)`);
+      console.log('force stop: ', curPlaying);
+      return;
     }
-  };
 
-  sourceNode.start();
-  playStarts[curPlaying] = audioContext.currentTime;
+    if (activePlayingSources.size > 0) {
+      const waitingFor = Array.from(activePlayingSources.keys());
+      addLog(`行${myCnt}: 待機開始 (再生中: [${waitingFor.join(', ')}])`);
+      await waitForPreviousPlayback(myCnt);
+      addLog(`行${myCnt}: 待機終了、再生を開始します`);
+    }
+
+    if (isPlaying) {
+      addLog(`行${myCnt}: 既に他の音声が再生中のためスキップ`);
+      return;
+    }
+
+    if (pendingBytesQueue.length === 0) {
+      addLog(`行${myCnt}: キューが空のため再生できません`);
+      return;
+    }
+
+    if (playTexts.length === 0) {
+      addLog(`行${myCnt}: テキストが空のため再生できません`);
+      return;
+    }
+
+    curPlaying = myCnt;
+    isPlaying = true;
+    nextPlayIndex++;
+
+    playStart = performance.now();
+    const ctext = playTexts.shift()!;
+    (document.getElementById('prevText') as HTMLElement).innerText = (document.getElementById('currentText') as HTMLElement).innerText;
+    (document.getElementById('currentText') as HTMLElement).innerText = ctext;
+    (document.getElementById('curIdx') as HTMLElement).innerText = String(curPlaying);
+
+    addLog(`再生開始: 行${curPlaying} "${ctext.substring(0, 20)}..."`);
+
+    const dataToPlay = pendingBytesQueue.shift()!;
+
+    const int16Data = new Int16Array(dataToPlay.buffer);
+    const float32Data = new Float32Array(int16Data.length);
+    for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768.0;
+
+    const fadeLength = Math.min(480, Math.floor(float32Data.length * 0.02));
+    for (let i = 0; i < fadeLength; i++) {
+      const fadeMultiplier = i / fadeLength;
+      float32Data[i] *= fadeMultiplier;
+    }
+    for (let i = 0; i < fadeLength; i++) {
+      const fadeMultiplier = i / fadeLength;
+      float32Data[float32Data.length - 1 - i] *= fadeMultiplier;
+    }
+
+    const audioBuffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
+    audioBuffer.copyToChannel(float32Data, 0);
+
+    const actualDuration = audioBuffer.duration;
+    actualDurations[myCnt] = actualDuration;
+    addLog(`音声データ長: 行${myCnt} ${actualDuration.toFixed(2)}秒`);
+
+    sourceNode = audioContext.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+
+    activePlayingSources.set(myCnt, {
+      startTime: performance.now(),
+      text: ctext,
+      sourceNode
+    });
+
+    if (activePlayingSources.size > 1) {
+      const activeIndices = Array.from(activePlayingSources.keys()).join(', ');
+      addLog(`⚠️ 警告: 多重再生検知！ 再生中の行: [${activeIndices}]`);
+    }
+
+    updateConcurrentPlayingDisplay();
+
+    sourceNode.connect(analyserNode);
+    analyserNode.connect(audioContext.destination);
+
+    sourceNode.onended = () => {
+      isPlaying = false;
+      activePlayingSources.delete(myCnt);
+      updateConcurrentPlayingDisplay();
+      highlightActiveLine();
+
+      if (idxForceStop > -1 && idxForceStop !== curPlaying) {
+        EndStatuses(curPlaying - 1);
+        idxForceStop = -1;
+        return;
+      }
+      EndStatuses(curPlaying);
+      addLog(`再生完了: 行${curPlaying}`);
+      idxForceStop = -1;
+
+      if (playbackQueue.length > 0) {
+        const nextIdxPosition = playbackQueue.indexOf(nextPlayIndex);
+        if (nextIdxPosition >= 0) {
+          playbackQueue.splice(nextIdxPosition, 1);
+          addLog(`キューから取り出し: 行${nextPlayIndex}を${intervalPerLine}秒後に再生開始`);
+          setTimeout(() => {
+            schedulePlayback(nextPlayIndex);
+          }, intervalPerLine * 1000);
+        } else {
+          addLog(`警告: キューに次の行${nextPlayIndex}が見つかりません（キュー: [${playbackQueue.join(', ')}]）`);
+        }
+      }
+    };
+
+    sourceNode.start();
+    playStarts[curPlaying] = audioContext.currentTime;
+  } finally {
+    // 再生開始処理完了：別の開始処理を許可
+    playbackStarting = false;
+  }
 }
 
-// 波形描画開始
-drawWaveform();
-
+// 副作用（タイマー開始、描画、イベント登録等）は initRuntime() で一度だけ実行する
 let isPause = false;
 let isStop = false;
 
-(document.getElementById('pause') as HTMLButtonElement).addEventListener('click', () => {
-  if (isPause) {
-    audioContext.resume().then(() => {
-      isPause = false;
-      (document.getElementById('pause') as HTMLButtonElement).innerText = '⏸️ 一時停止';
-      addLog('再開しました');
-    });
-  } else {
-    audioContext.suspend().then(() => {
-      isPause = true;
-      (document.getElementById('pause') as HTMLButtonElement).innerText = '▶️ 再開';
-      addLog('一時停止しました');
-    });
-  }
-});
+function initRuntime(): void {
+  // 描画ループとタイマーを開始
+  drawWaveform();
+  setInterval(updateTimerDisplay, 100);
 
-// 再生停止ボタンのクリックイベント
-(document.getElementById('stop') as HTMLButtonElement).addEventListener('click', () => {
-  isStop = true;
-  activePlayingSources.forEach((info, idx) => {
-    if (info.sourceNode) {
-      try {
-        info.sourceNode.stop();
-        info.sourceNode.disconnect();
-      } catch (e) {
-        console.error(`行${idx}の停止エラー:`, e);
-      }
+  // 一時停止トグル
+  (document.getElementById('pause') as HTMLButtonElement).addEventListener('click', () => {
+    if (isPause) {
+      audioContext.resume().then(() => {
+        isPause = false;
+        (document.getElementById('pause') as HTMLButtonElement).innerText = '⏸️ 一時停止';
+        addLog('再開しました');
+      });
+    } else {
+      audioContext.suspend().then(() => {
+        isPause = true;
+        (document.getElementById('pause') as HTMLButtonElement).innerText = '▶️ 再開';
+        addLog('一時停止しました');
+      });
     }
   });
 
-  if (sourceNode) {
-    try { sourceNode.stop(); } catch {}
-    try { sourceNode.disconnect(); } catch {}
-    isPlaying = false;
-    pendingBytes = new Uint8Array(0);
-    leftover = new Uint8Array(0);
-  }
+  // 停止ボタン
+  (document.getElementById('stop') as HTMLButtonElement).addEventListener('click', () => {
+    isStop = true;
+    activePlayingSources.forEach((info, idx) => {
+      if (info.sourceNode) {
+        try {
+          info.sourceNode.stop();
+          info.sourceNode.disconnect();
+        } catch (e) {
+          console.error(`行${idx}の停止エラー:`, e);
+        }
+      }
+    });
 
-  activePlayingSources.clear();
-  updateConcurrentPlayingDisplay();
-  addLog('再生を停止しました');
-});
+    if (sourceNode) {
+      try { sourceNode.stop(); } catch {}
+      try { sourceNode.disconnect(); } catch {}
+      isPlaying = false;
+      pendingBytes = new Uint8Array(0);
+      leftover = new Uint8Array(0);
+    }
 
-(document.getElementById('clearLog') as HTMLButtonElement).addEventListener('click', () => {
-  (document.getElementById('logContainer') as HTMLElement).innerHTML = '';
-});
+    activePlayingSources.clear();
+    updateConcurrentPlayingDisplay();
+    addLog('再生を停止しました');
+  });
+
+  // ログクリア
+  (document.getElementById('clearLog') as HTMLButtonElement).addEventListener('click', () => {
+    (document.getElementById('logContainer') as HTMLElement).innerHTML = '';
+  });
+
+  // テンプレート選択イベント
+  (document.getElementById('templateFileSelect') as HTMLSelectElement).addEventListener('change', async (e) => {
+    const selectedFile = (e.target as HTMLSelectElement).value;
+    if (!selectedFile) return;
+    await loadTemplateFileContent(selectedFile);
+  });
+
+  // window load ハンドラ内の初期化処理
+  window.addEventListener('load', async () => {
+    updateTextDisplay();
+    const urlParams = new URLSearchParams(window.location.search);
+    const startLine = urlParams.get('l');
+    if (startLine !== null) {
+      (document.getElementById('startLineNumber') as HTMLInputElement).value = startLine;
+      addLog(`📍 開始行番号を設定: ${startLine}`);
+    }
+    const voiceNum = urlParams.get('voiceNumber');
+    if (voiceNum !== null) {
+      (document.getElementById('voiceNumber') as HTMLInputElement).value = voiceNum;
+      addLog(`🎤 音声番号を設定: ${voiceNum}`);
+    }
+    const speed = urlParams.get('playbackSpeed');
+    if (speed !== null) {
+      (document.getElementById('playbackSpeed') as HTMLInputElement).value = speed;
+      addLog(`⏱️ 再生速度を設定: ${speed}`);
+    }
+
+    await loadTemplateFiles();
+
+    const message = urlParams.get('message');
+    if (message !== null) {
+      (document.getElementById('templateFileSelect') as HTMLSelectElement).value = message;
+      addLog(`📄 テンプレートファイルを設定: ${message}`);
+      await loadTemplateFileContent(message);
+    }
+
+    (document.getElementById('voiceNumber') as HTMLInputElement).addEventListener('change', (e) => {
+      addLog(`🎤 音声番号を変更: ${(e.target as HTMLInputElement).value}`);
+    });
+    (document.getElementById('playbackSpeed') as HTMLInputElement).addEventListener('change', (e) => {
+      addLog(`⏱️ 再生速度を変更: ${(e.target as HTMLInputElement).value}`);
+    });
+    (document.getElementById('concurrentRequests') as HTMLInputElement).addEventListener('change', (e) => {
+      MAX_CONCURRENT_REQUESTS = parseInt((e.target as HTMLInputElement).value) || 3;
+      addLog(`📊 並行リクエスト数を変更: ${(e.target as HTMLInputElement).value}`);
+    });
+  });
+
+  // グローバル公開
+  (window as any).togglePanel = togglePanel;
+  (window as any).generateLineURLAndOpen = generateLineURLAndOpen;
+}
+
+// 初期化は一度だけ実行されるようガードする
+// NOTE: avoid `declare global` here to keep this file valid in both script/module contexts
+if ((window as any).__openai_tts_realtime_initialized) {
+  console.log('openai_tts_realtime: already initialized, skipping');
+} else {
+  (window as any).__openai_tts_realtime_initialized = true;
+  initRuntime();
+}
 
 // ========== テンプレートファイル選択機能 ==========
 async function loadTemplateFiles(): Promise<void> {

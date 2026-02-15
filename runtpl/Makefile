@@ -12,6 +12,8 @@ EPOCH=$(shell date +%s)
 EMBED_SCRIPT := scripts/embed_ts.js
 
 openai_tts_realtime_t.js: *.ts
+	@echo "Type-checking with npx tsc --noEmit"
+	@npx tsc --noEmit
 	$(ESBUILD) $(TS_SRC) --bundle --format=esm --target=es2020 --outfile=./$(OUT) --sourcemap
 
 build: embed
